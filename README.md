@@ -3,7 +3,7 @@ a novel hybrid approach combining graph theory and machine learning to identify 
 # Dataset
 https://www.kaggle.com/datasets/asaniczka/1-3m-linkedin-jobs-and-skills-2024?select=job_skills.csv
 
-#Data Cleaning
+# Data Cleaning
 
 NLP-enhanced preprocessing for analyzing skill pathways between tech roles.
 
