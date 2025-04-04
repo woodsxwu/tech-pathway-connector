@@ -5,54 +5,40 @@ https://www.kaggle.com/datasets/asaniczka/1-3m-linkedin-jobs-and-skills-2024?sel
 
 # Data Cleaning
 
-NLP-enhanced preprocessing for analyzing skill pathways between tech roles.
+1. Copy the script to your environment
+2. Run it:
+   ```python
+   %run clean_tech_jobs_final.py
+   ```
+3. If prompted for file paths, enter them
+4. Get your cleaned data in `tech_jobs_with_skills.csv`
 
-## Setup
+That's it.
 
-```bash
-pip install pandas numpy spacy scikit-learn nltk
-python -m spacy download en_core_web_md
-```
+## Tech Role Categories
 
-## Usage
+The script specifically identifies these tech roles:
+- frontend_developer
+- backend_developer
+- fullstack_developer
+- data_scientist
+- data_engineer
+- devops_engineer
+- mobile_developer
+- security_engineer
+- qa_engineer
+- software_engineer
+- cloud_architect
+- data_analyst
+- product_manager
+- technical_support
 
-```python
-from data_cleaning import nlp_enhanced_analysis
-import pandas as pd
-
-# Load data
-job_postings = pd.read_csv('linkedin_job_postings.csv')
-job_skills = pd.read_csv('job_skills.csv')
-
-# Specify transitions to analyze
-focus_transitions = [
-    ('backend_developer', 'devops_engineer'),
-    ('mobile_developer', 'fullstack_developer')
-]
-
-# Run analysis
-results = nlp_enhanced_analysis(job_postings, job_skills, focus_transitions)
-
-# Save results
-results['integrated_data'].to_csv('cleaned_data/integrated_data.csv', index=False)
-```
-
-## Input Format
-
-- `linkedin_job_postings.csv`: Contains `job_link`, `job_title`, `company`, etc.
-- `job_skills.csv`: Contains `job_link` and `job_skills` (comma-separated)
+Jobs outside these specific categories are excluded from the output.
 
 ## Output
 
-- `job_postings_clean`: Standardized job titles and classifications
-- `job_skills_clean`: Normalized skills
-- `integrated_data`: Jobs linked with skills
-- `role_skills`: Skills mapped to roles with importance scores
-- `transition_analyses`: Pathway analysis between specified role pairs
-
-## Next Steps
-
-Use cleaned data to implement:
-1. Baseline frequency analysis
-2. MST algorithm
-3. TechBridge hybrid algorithm
+The script generates a CSV file with these columns:
+- `job_id`: The job identifier
+- `title`: The job title
+- `role_category`: The specific tech role category
+- `skills`: The list of normalized skills for each job
