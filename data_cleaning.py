@@ -1,8 +1,10 @@
 import pandas as pd
 import re
 import os
+import kagglehub
+from collections import Counter
+import time
 from tqdm import tqdm
-
 
 def identify_tech_roles(job_title):
     """
@@ -14,463 +16,595 @@ def identify_tech_roles(job_title):
 
     # Define tech role patterns with clear boundaries to prevent partial matches
     tech_patterns = {
-        'frontend_developer': r'\b(front.?end|ui developer|react developer|angular developer|vue developer)\b',
-        'backend_developer': r'\b(back.?end|api developer|django developer|flask developer|node developer|java developer|python developer)\b',
-        'fullstack_developer': r'\b(full.?stack|mean stack|mern stack|lamp stack|web developer)\b',
-        'data_scientist': r'\b(data scien|machine learning|ml engineer|ai researcher|ml scientist)\b',
-        'data_engineer': r'\b(data engineer|etl developer|data pipeline|big data)\b',
-        'devops_engineer': r'\b(devops|sre|site reliability|infrastructure|platform engineer|cloud engineer)\b',
-        'mobile_developer': r'\b(mobile|ios|android|flutter|react native|swift developer)\b',
-        'security_engineer': r'\b(security|cyber|penetration tester|ethical hacker|infosec)\b',
+        'ai_engineer': r'\b(ai engineer|generative ai|llm engineer|machine learning engineer|ml engineer|ml ops|mlops|ai infrastructure)\b',
+        'frontend_developer': r'\b(front.?end|ui developer|react developer|angular developer|vue developer|javascript developer|typescript developer|ui engineer)\b',
+        'backend_developer': r'\b(back.?end|api developer|django developer|flask developer|node developer|java developer|python developer|golang developer|ruby developer|php developer|scala developer|rust developer|c\+\+ developer|api engineer)\b',
+        'fullstack_developer': r'\b(full.?stack|mean stack|mern stack|lamp stack|web developer|full stack)\b',
+        'mobile_developer': r'\b(mobile|ios|android|flutter|react native|swift developer|mobile app)\b',
+        'devops_engineer': r'\b(devops|site reliability|platform engineer)\b',
+        'cloud_engineer': r'\b(cloud engineer|aws engineer|azure engineer|gcp engineer)\b',
         'qa_engineer': r'\b(qa engineer|quality assurance|test engineer|automation test|sdet)\b',
-        'software_engineer': r'\b(software engineer|programmer|coder|developer)\b',
-        'cloud_architect': r'\b(cloud architect|aws architect|azure architect|gcp architect)\b',
+        'embedded_engineer': r'\b(embedded|firmware|hardware engineer|iot engineer)\b',
+        'database_engineer': r'\b(database engineer|dba|database administrator|sql developer)\b',
         'data_analyst': r'\b(data analyst|business intelligence|bi developer|analytics)\b',
-        'product_manager': r'\b(product manager|technical product manager|product owner)\b',
-        'technical_support': r'\b(technical support|it support|help desk|system admin)\b'
+        'technical_support': r'\b(technical support|it support|help desk|system admin)\b',
     }
 
-    # Check each pattern
+    # Order matters - check specialized roles first
     for role, pattern in tech_patterns.items():
         if re.search(pattern, title):
             return role
 
-    # No specific tech role found - return None instead of 'other_tech'
+    # No specific tech role found - return None
     return None
 
+def is_generic_skill(skill):
+    """
+    Identify if a skill is generic or non-technical
+    Returns True if the skill is generic, False otherwise
+    """
+    # Make sure we're comparing lowercase strings
+    skill_lower = skill.lower().strip()
+
+    # More comprehensive generic skills set
+    generic_skills = {
+        # Soft skills
+        'communication', 'communication skill', 'communication skills',
+        'effective communication', 'clear communication', 'verbal communication',
+        'written communication', 'teamwork', 'team work', 'team player', 'team building',
+        'problem solving', 'problem-solving', 'problem solver',
+        'leadership', 'time management', 'creativity', 'critical thinking',
+        'adaptability', 'collaboration', 'attention to detail', 'project management',
+        'organization', 'self-motivated', 'self motivated', 'analytical skills',
+        'analytical thinking', 'interpersonal skills', 'interpersonal',
+
+        # Generic business terms
+        'business', 'strategy', 'analytics', 'reporting', 'scheduling', 'training',
+        'mentoring', 'consulting', 'operations', 'planning', 'documentation',
+        'management', 'customer service', 'client relations', 'relationship building',
+
+        # Too generic tech terms
+        'computer', 'technology', 'technical', 'it', 'software', 'hardware', 'programming',
+        'coding', 'development', 'engineering', 'testing', 'debugging', 'computer science',
+
+        # Generic tools
+        'microsoft office', 'office', 'word', 'excel', 'powerpoint', 'outlook', 'email',
+        'presentation', 'spreadsheet', 'microsoft', 'office suite'
+    }
+
+    # Check if skill contains common generic skill keywords
+    generic_keywords = ['skill', 'ability', 'proficiency', 'knowledge', 'experience', 'expertise']
+    contains_generic_keyword = any(keyword in skill_lower for keyword in generic_keywords)
+
+    # Check if skill is in the generic list, is punctuation, or is very short
+    return (skill_lower in generic_skills or
+            len(skill_lower) <= 2 or  # Very short abbreviations
+            skill_lower.isdigit() or   # Just numbers
+            skill_lower in [',', '.', ';', ':', '-'] or  # Common punctuation
+            contains_generic_keyword)  # Contains generic keywords
+
+def normalize_skill(skill):
+    """
+    Normalize and standardize skill names to group related skills
+    Returns the normalized skill name
+    """
+    # Map of skill variants to their canonical names
+    skill_mappings = {
+        # JavaScript ecosystem
+        'js': 'javascript',
+        'javascript': 'javascript',
+        'ecmascript': 'javascript',
+        'typescript': 'typescript',
+        'ts': 'typescript',
+
+        # React ecosystem
+        'react': 'react',
+        'react.js': 'react',
+        'reactjs': 'react',
+        'react native': 'react native',  # Keep React Native separate due to mobile focus
+
+        # Vue ecosystem
+        'vue': 'vue',
+        'vue.js': 'vue',
+        'vuejs': 'vue',
+        'vuex': 'vue',
+
+        # Angular ecosystem
+        'angular': 'angular',
+        'angular.js': 'angular',
+        'angularjs': 'angular',
+        'ng': 'angular',
+
+        # Node.js ecosystem
+        'node': 'node.js',
+        'node.js': 'node.js',
+        'nodejs': 'node.js',
+        'express': 'express.js',
+        'express.js': 'express.js',
+        'expressjs': 'express.js',
+
+        # Python ecosystem
+        'py': 'python',
+        'python': 'python',
+        'django': 'django',
+        'flask': 'flask',
+        'fastapi': 'fastapi',
+
+        # Java ecosystem
+        'java': 'java',
+        'spring': 'spring',
+        'spring boot': 'spring boot',
+        'springboot': 'spring boot',
+        'j2ee': 'java ee',
+        'java ee': 'java ee',
+        'javaee': 'java ee',
+
+        # Cloud platforms
+        'aws': 'aws',
+        'amazon web services': 'aws',
+        'ec2': 'aws ec2',
+        's3': 'aws s3',
+        'lambda': 'aws lambda',
+        'azure': 'azure',
+        'microsoft azure': 'azure',
+        'msft azure': 'azure',
+        'gcp': 'gcp',
+        'google cloud': 'gcp',
+        'google cloud platform': 'gcp',
+
+        # DevOps tools
+        'kubernetes': 'kubernetes',
+        'k8s': 'kubernetes',
+        'docker': 'docker',
+        'terraform': 'terraform',
+        'ansible': 'ansible',
+        'jenkins': 'jenkins',
+        'ci/cd': 'ci/cd',
+        'cicd': 'ci/cd',
+        'continuous integration': 'ci/cd',
+        'continuous deployment': 'ci/cd',
+
+        # Databases
+        'sql': 'sql',
+        'mysql': 'mysql',
+        'postgresql': 'postgresql',
+        'postgres': 'postgresql',
+        'postgre': 'postgresql',
+        'oracle': 'oracle db',
+        'oracle database': 'oracle db',
+        'mongodb': 'mongodb',
+        'mongo': 'mongodb',
+        'nosql': 'nosql',
+        'redis': 'redis',
+
+        # Mobile development
+        'ios': 'ios',
+        'android': 'android',
+        'swift': 'swift',
+        'kotlin': 'kotlin',
+        'flutter': 'flutter',
+        'dart': 'dart',
+
+        # Front-end technologies
+        'html': 'html',
+        'html5': 'html',
+        'css': 'css',
+        'css3': 'css',
+        'sass': 'sass/scss',
+        'scss': 'sass/scss',
+        'less': 'less',
+
+        # Data Science & ML
+        'machine learning': 'machine learning',
+        'ml': 'machine learning',
+        'deep learning': 'deep learning',
+        'dl': 'deep learning',
+        'tensorflow': 'tensorflow',
+        'tf': 'tensorflow',
+        'pytorch': 'pytorch',
+        'scikit-learn': 'scikit-learn',
+        'sklearn': 'scikit-learn',
+        'nlp': 'nlp',
+        'natural language processing': 'nlp',
+        'computer vision': 'computer vision',
+        'cv': 'computer vision',
+
+        # Data Analysis
+        'pandas': 'pandas',
+        'numpy': 'numpy',
+        'matplotlib': 'matplotlib',
+        'jupyter': 'jupyter',
+        'tableau': 'tableau',
+        'power bi': 'power bi',
+        'powerbi': 'power bi',
+
+        # Version Control
+        'git': 'git',
+        'github': 'github',
+        'gitlab': 'gitlab',
+        'bitbucket': 'bitbucket',
+
+        # Testing
+        'unit testing': 'unit testing',
+        'integration testing': 'integration testing',
+        'e2e testing': 'e2e testing',
+        'end-to-end testing': 'e2e testing',
+        'selenium': 'selenium',
+        'cypress': 'cypress',
+        'jest': 'jest',
+        'mocha': 'mocha',
+        'chai': 'chai',
+
+        # API
+        'rest': 'rest api',
+        'rest api': 'rest api',
+        'restful': 'rest api',
+        'restful api': 'rest api',
+        'graphql': 'graphql',
+        'soap': 'soap api',
+        'soap api': 'soap api',
+
+        # AI/ML specialized
+        'llm': 'large language models',
+        'large language model': 'large language models',
+        'large language models': 'large language models',
+        'generative ai': 'generative ai',
+        'transformers': 'transformers',
+        'gpt': 'gpt',
+        'chatgpt': 'gpt',
+        'bert': 'bert'
+    }
+
+    # Return the canonical skill name if found, otherwise the original
+    return skill_mappings.get(skill.lower(), skill)
 
 def clean_skills(skills_text):
     """Clean and normalize a comma-separated skills string"""
-    if not isinstance(skills_text, str):
+    if not isinstance(skills_text, str) or not skills_text.strip():
         return []
 
-    # Split by comma and clean each skill
-    skills = [skill.strip().lower() for skill in skills_text.split(',')]
+    # Replace multiple instances of commas with a single comma and split
+    cleaned_text = re.sub(r',+', ',', skills_text.strip())
+    # Handle other common separators that might be used
+    cleaned_text = re.sub(r'[;|]', ',', cleaned_text)
 
-    # Filter out empty skills and normalize
+    # Split on commas
+    raw_skills = [skill.strip().lower() for skill in cleaned_text.split(',')]
+
+    # Filter out empty skills, normalize, and remove generic skills
     cleaned_skills = []
-    for skill in skills:
+    for skill in raw_skills:
         if not skill:
             continue
 
-        # Basic normalization for common tech skills
-        skill_mappings = {
-            'js': 'javascript',
-            'ts': 'typescript',
-            'py': 'python',
-            'react.js': 'react',
-            'reactjs': 'react',
-            'vue.js': 'vue',
-            'vuejs': 'vue',
-            'angular.js': 'angular',
-            'angularjs': 'angular',
-            'node.js': 'node',
-            'nodejs': 'node',
-            'k8s': 'kubernetes',
-            'aws cloud': 'aws',
-            'msft azure': 'azure',
-            'microsoft azure': 'azure',
-            'postgre': 'postgresql',
-            'postgres': 'postgresql',
-            'mongo': 'mongodb'
-        }
+        # Remove any potential leftover punctuation
+        skill = re.sub(r'[^\w\s]', '', skill).strip()
+        if not skill:
+            continue
 
-        # Apply mappings
-        for old, new in skill_mappings.items():
-            if skill == old:
-                skill = new
-                break
+        # Skip very short terms (likely abbreviations without context)
+        if len(skill) <= 2:
+            continue
 
-        cleaned_skills.append(skill)
+        # Normalize the skill
+        normalized_skill = normalize_skill(skill)
+
+        # Filter out generic skills
+        if not is_generic_skill(normalized_skill):
+            cleaned_skills.append(normalized_skill)
 
     # Remove duplicates while preserving order
     unique_skills = []
     for skill in cleaned_skills:
-        if skill not in unique_skills:
+        if skill not in unique_skills and skill.strip():  # Extra check for empty strings
             unique_skills.append(skill)
 
     return unique_skills
 
-
-def find_csv_file(directory, keywords, fallback_to_current_dir=True):
-    """Find a CSV file in a directory containing all the given keywords"""
-    if os.path.exists(directory):
-        for file in os.listdir(directory):
-            if file.endswith('.csv') and all(keyword.lower() in file.lower() for keyword in keywords):
-                return os.path.join(directory, file)
-
-    # Fallback to current directory
-    if fallback_to_current_dir and directory != '.':
-        for file in os.listdir('.'):
-            if file.endswith('.csv') and all(keyword.lower() in file.lower() for keyword in keywords):
-                return file
-
-    return None
-
-
-def merge_and_clean_tech_jobs(jobs_file, skills_file, output_file, batch_size=10000, debug=False):
+def post_process_skills(df, skills_column='skills'):
     """
-    Process job postings and skills to create a cleaned tech jobs dataset
-
-    Parameters:
-    -----------
-    jobs_file : str
-        Path to the job postings CSV file
-    skills_file : str
-        Path to the job skills CSV file
-    output_file : str
-        Path for the output CSV file
-    batch_size : int
-        Size of batches for processing
-    debug : bool
-        Enable debug output
+    Perform a final cleaning pass on the skills column to remove any remaining
+    generic skills or empty entries that might have slipped through
     """
-    # Set debug mode
-    if debug:
-        print("DEBUG MODE ENABLED")
-        print(f"Job postings file: {jobs_file}")
-        print(f"Skills file: {skills_file}")
+    def clean_skill_list(skill_list):
+        if not isinstance(skill_list, list):
+            return []
 
-    print(f"Loading job postings from: {jobs_file}")
+        # Apply the is_generic_skill filter again
+        return [skill for skill in skill_list if skill and not is_generic_skill(skill)]
 
-    # Count total rows for progress reporting
-    total_rows = sum(1 for _ in open(jobs_file, 'r')) - 1  # Subtract header
+    # Apply the cleaning function to the skills column
+    df[skills_column] = df[skills_column].apply(clean_skill_list)
 
-    # Try different encodings and delimiters for CSV files
-    encodings = ['utf-8', 'latin1', 'ISO-8859-1']
-    delimiters = [',', ';', '\t']
+    # Remove rows with no skills after cleaning
+    filtered_df = df[df[skills_column].apply(lambda x: len(x) > 0)]
 
-    # Try to find the right encoding and delimiter for jobs file
-    read_successful = False
-    for encoding in encodings:
-        if read_successful:
-            break
-        for delimiter in delimiters:
-            try:
-                # Try reading a small sample
-                sample_df = pd.read_csv(jobs_file, nrows=5, encoding=encoding, sep=delimiter)
-                if debug:
-                    print(f"Successfully read job file with encoding={encoding}, delimiter='{delimiter}'")
-                    print(f"Sample columns: {sample_df.columns.tolist()}")
-                read_successful = True
-                break
-            except Exception as e:
-                if debug:
-                    print(f"Failed reading with encoding={encoding}, delimiter='{delimiter}': {str(e)}")
-                continue
+    print(f"Removed {len(df) - len(filtered_df)} rows with empty skills after post-processing")
+    return filtered_df
 
-    if not read_successful:
-        print("Error: Could not read job postings file with any encoding/delimiter combination")
-        return
+def validate_skills_cleaning(df, skills_column='skills'):
+    """
+    Validate the skills cleaning process by checking for any remaining generic skills
+    or problematic entries in the dataset
+    """
+    print("Validating skills cleaning...")
 
-    # Read job postings in chunks with the detected encoding and delimiter
-    tech_jobs = []
-    for chunk in tqdm(pd.read_csv(jobs_file, chunksize=batch_size, encoding=encoding, sep=delimiter),
-                      total=total_rows // batch_size + 1,
-                      desc="Processing job postings"):
+    # Check for empty skill lists
+    empty_skills = df[df[skills_column].apply(lambda x: not x or len(x) == 0)]
+    print(f"Rows with empty skill lists: {len(empty_skills)}")
 
-        # Extract relevant columns
-        required_cols = ['job_title']
-        id_cols = ['job_id', 'job_link', 'id', 'link']
+    # Flatten all skills to check for generic ones
+    all_skills = []
+    for skill_list in df[skills_column]:
+        if isinstance(skill_list, list):
+            all_skills.extend(skill_list)
 
-        # First check if any of our possible ID columns exist
-        found_id_col = None
-        for id_col in id_cols:
-            if id_col in chunk.columns:
-                found_id_col = id_col
-                break
+    # Count all skills
+    skill_counts = Counter(all_skills)
 
-        if found_id_col is None:
-            print(f"Error: Could not find any job ID column. Looking for any of: {id_cols}")
-            print(f"Available columns: {chunk.columns.tolist()}")
-            return None
+    # Check for potential remaining generic skills
+    potential_generic = []
+    for skill, count in skill_counts.most_common(50):  # Check top 50 most common skills
+        if is_generic_skill(skill):
+            potential_generic.append((skill, count))
 
-        # Check for title column
-        missing_cols = [col for col in required_cols if col not in chunk.columns]
+    if potential_generic:
+        print("\nPotential generic skills still in the dataset:")
+        for skill, count in potential_generic:
+            print(f"  - '{skill}': {count} occurrences")
+    else:
+        print("No common generic skills found in the dataset.")
 
-        if missing_cols:
-            print(f"Error: Missing required columns in job postings file: {missing_cols}")
-            print(f"Available columns: {chunk.columns.tolist()}")
+    # Check for suspiciously short skills (might be abbreviations without context)
+    short_skills = []
+    for skill, count in skill_counts.items():
+        if len(skill) <= 3 and count > 10:  # Short and appears multiple times
+            short_skills.append((skill, count))
 
-            # Try to find alternative title column name
-            if 'job_title' in missing_cols and any(col for col in chunk.columns if 'title' in col.lower()):
-                alt_title_col = next(col for col in chunk.columns if 'title' in col.lower())
-                print(f"Using '{alt_title_col}' instead of 'job_title'")
-                chunk['job_title'] = chunk[alt_title_col]
+    if short_skills:
+        print("\nPotentially problematic short skills:")
+        for skill, count in sorted(short_skills, key=lambda x: x[1], reverse=True):
+            print(f"  - '{skill}': {count} occurrences")
 
-            # Check again if we still have missing columns
-            missing_cols = [col for col in required_cols if col not in chunk.columns]
-            if missing_cols:
-                print(f"Error: Still missing required columns: {missing_cols}")
-                if debug:
-                    print("First few rows of the data:")
-                    print(chunk.head())
-                return None
+    # Check for punctuation or strange characters
+    punctuation_skills = []
+    for skill, count in skill_counts.items():
+        if any(char in skill for char in ',;.:-()[]{}'):
+            punctuation_skills.append((skill, count))
 
-        # Create a new DataFrame with the columns we need
-        subset = pd.DataFrame()
-        subset['job_id'] = chunk[found_id_col]  # Use the found ID column but map to job_id
-        subset['job_title'] = chunk['job_title']
+    if punctuation_skills:
+        print("\nSkills with punctuation:")
+        for skill, count in punctuation_skills:
+            print(f"  - '{skill}': {count} occurrences")
 
-        # Identify tech roles
-        subset['tech_role'] = subset['job_title'].apply(identify_tech_roles)
+    return potential_generic, short_skills, punctuation_skills
 
-        # Filter tech roles
-        tech_subset = subset[subset['tech_role'].notna()].copy()
-        tech_jobs.append(tech_subset)
+def sample_equal_roles(df, role_column='role_category', sample_size=None):
+    """Sample an equal number of rows for each role category"""
+    # Count occurrences of each role
+    role_counts = df[role_column].value_counts()
 
-    # Combine all tech jobs
-    if not tech_jobs:
-        print("No specific tech jobs found!")
-        return
+    # Determine sample size (minimum count or specified value)
+    if sample_size is None:
+        sample_size = min(role_counts)
+    else:
+        # Ensure sample size doesn't exceed the minimum available
+        sample_size = min(sample_size, min(role_counts))
 
-    tech_jobs_df = pd.concat(tech_jobs, ignore_index=True)
-    print(f"Found {len(tech_jobs_df)} specifically categorized tech jobs")
+    print(f"Sampling {sample_size} jobs per role category")
+
+    # Sample equal number from each role
+    sampled_dfs = []
+    for role in role_counts.index:
+        role_df = df[df[role_column] == role]
+        if len(role_df) > sample_size:
+            sampled_dfs.append(role_df.sample(sample_size, random_state=42))
+        else:
+            sampled_dfs.append(role_df)
+
+    # Combine all samples
+    return pd.concat(sampled_dfs, ignore_index=True)
+
+def process_data(jobs_file, skills_file, output_file, sample_per_role=100):
+    """Process job postings and skills to create a cleaned tech jobs dataset"""
+    start_time = time.time()
+
+    print(f"Reading job postings from: {jobs_file}")
+    jobs_df = pd.read_csv(jobs_file)
+    print(f"Job file read complete: {len(jobs_df)} job postings")
+
+    print(f"Reading skills data from: {skills_file}")
+    skills_df = pd.read_csv(skills_file)
+    print(f"Skills file read complete: {len(skills_df)} skill entries")
+
+    # Get column names
+    job_id_col = 'job_link'  # Based on your logs, this is the common ID column
+    job_title_col = 'job_title'
+    skills_col = 'job_skills'
+
+    print("Identifying tech roles (this might take a minute)...")
+    jobs_df['tech_role'] = jobs_df[job_title_col].apply(identify_tech_roles)
+
+    # Filter to tech jobs only
+    tech_jobs_df = jobs_df[jobs_df['tech_role'].notna()].copy()
+    print(f"Found {len(tech_jobs_df)} tech jobs from {len(jobs_df)} total job postings")
 
     # Show distribution of tech roles
     role_counts = tech_jobs_df['tech_role'].value_counts()
     print("\nDistribution of tech roles:")
+    print("===========================")
     for role, count in role_counts.items():
-        print(f"  {role}: {count} jobs ({count / len(tech_jobs_df) * 100:.1f}%)")
+        print(f"{role}: {count} ({count/len(tech_jobs_df)*100:.1f}%)")
 
-    # Read skills data
-    print(f"Loading skills data from: {skills_file}")
+    # Get tech job IDs
+    tech_job_ids = set(tech_jobs_df[job_id_col])
+    print(f"Filtering skills to {len(tech_job_ids)} tech job IDs...")
 
-    # Find the right encoding and delimiter for skills file
-    skills_read_successful = False
-    for encoding in encodings:
-        if skills_read_successful:
-            break
-        for delimiter in delimiters:
-            try:
-                # Try reading a small sample
-                skills_sample = pd.read_csv(skills_file, nrows=5, encoding=encoding, sep=delimiter)
-                if debug:
-                    print(f"Successfully read skills file with encoding={encoding}, delimiter='{delimiter}'")
-                    print(f"Sample columns: {skills_sample.columns.tolist()}")
-                skills_read_successful = True
-                break
-            except Exception as e:
-                if debug:
-                    print(f"Failed reading skills with encoding={encoding}, delimiter='{delimiter}': {str(e)}")
-                continue
+    # Filter skills to only include tech jobs (more efficient than join)
+    tech_skills_df = skills_df[skills_df[job_id_col].isin(tech_job_ids)].copy()
+    print(f"Found {len(tech_skills_df)} skill entries for tech jobs")
 
-    if not skills_read_successful:
-        print("Error: Could not read skills file with any encoding/delimiter combination")
-        return
+    # Clean skills column (only for tech jobs)
+    print("Cleaning and normalizing skills...")
+    tech_skills_df['clean_skills'] = tech_skills_df[skills_col].apply(clean_skills)
 
-    # Determine if job_id is in the skills file
-    job_id_cols = ['job_id', 'job_link', 'id', 'link']
-    job_id_col = None
+    # Verify if a job has skills
+    print("Identifying jobs with non-empty skills...")
+    # Get job IDs that have at least one skill
+    jobs_with_skills = tech_skills_df[tech_skills_df['clean_skills'].apply(lambda x: len(x) > 0)][job_id_col].unique()
+    print(f"Found {len(jobs_with_skills)} tech jobs that have at least one skill")
 
-    for col in job_id_cols:
-        if col in skills_sample.columns:
-            job_id_col = col
-            if debug:
-                print(f"Found job identifier column in skills file: '{job_id_col}'")
-            break
+    # Filter to only jobs with skills
+    valid_tech_jobs_df = tech_jobs_df[tech_jobs_df[job_id_col].isin(jobs_with_skills)].copy()
+    print(f"Filtered to {len(valid_tech_jobs_df)} tech jobs with non-empty skills")
 
-    if job_id_col is None:
-        print(
-            f"Error: Could not find job ID column in skills file. Available columns: {skills_sample.columns.tolist()}")
-        print(f"Looking for any of these columns: {job_id_cols}")
-        return
+    # Prepare for join - optimize by using only needed columns
+    tech_jobs_slim = valid_tech_jobs_df[[job_id_col, job_title_col, 'tech_role']].copy()
+    tech_skills_slim = tech_skills_df[[job_id_col, 'clean_skills']].copy()
 
-    # Read skills in chunks and merge with tech jobs
-    skills_data = []
+    # For performance, create dictionaries for skills lookup
+    print("Creating skills lookup for faster processing...")
+    skills_dict = {}
+    for _, row in tech_skills_slim.iterrows():
+        job_id = row[job_id_col]
+        skills = row['clean_skills']
+        if job_id not in skills_dict:
+            skills_dict[job_id] = skills
+        else:
+            # Merge skills lists for jobs with multiple skill entries
+            skills_dict[job_id].extend(skills)
+            # Remove duplicates
+            skills_dict[job_id] = list(dict.fromkeys(skills_dict[job_id]))
 
-    # Find skills column
-    skills_cols = ['job_skills', 'skills', 'skill']
-    skills_col = None
+    # Add skills to jobs dataframe without a join operation
+    print("Merging skills with jobs data...")
+    tech_jobs_slim['skills'] = tech_jobs_slim[job_id_col].map(skills_dict)
 
-    for col in skills_cols:
-        if col in skills_sample.columns:
-            skills_col = col
-            if debug:
-                print(f"Found skills column in skills file: '{skills_col}'")
-            break
+    # Verify no empty skills after mapping
+    empty_skills_count = tech_jobs_slim['skills'].isna().sum()
+    print(f"Jobs with missing skills after mapping: {empty_skills_count}")
 
-    if skills_col is None:
-        print(
-            f"Error: Could not find skills column in skills file. Available columns: {skills_sample.columns.tolist()}")
-        print(f"Looking for any of these columns: {skills_cols}")
-        return
+    # Remove any jobs that still have empty skills
+    if empty_skills_count > 0:
+        tech_jobs_slim = tech_jobs_slim[tech_jobs_slim['skills'].notna()].copy()
+        print(f"Removed {empty_skills_count} jobs with missing skills")
 
-    try:
-        for chunk in tqdm(pd.read_csv(skills_file, chunksize=batch_size, encoding=encoding, sep=delimiter),
-                          desc="Processing skills data"):
+    # Apply post-processing to catch any remaining generic skills
+    print("Performing final skills cleaning...")
+    tech_jobs_slim = post_process_skills(tech_jobs_slim, skills_column='skills')
 
-            # Filter skills for tech jobs
-            if skills_col in chunk.columns and job_id_col in chunk.columns:
-                tech_skills = chunk[chunk[job_id_col].isin(tech_jobs_df['job_id'])]
-                skills_data.append(tech_skills[[job_id_col, skills_col]])
-    except Exception as e:
-        print(f"Error reading skills data: {str(e)}")
-        return
+    # Sample equal number from each role category
+    if sample_per_role is not None:
+        print("Sampling equal roles...")
+        final_df = sample_equal_roles(tech_jobs_slim, role_column='tech_role', sample_size=sample_per_role)
+    else:
+        final_df = tech_jobs_slim
 
-    # Combine all skills data
-    if not skills_data:
-        print("No skills data found for tech jobs!")
-        return
+    # Show distribution after sampling
+    role_counts_after = final_df['tech_role'].value_counts()
+    print("\nDistribution of tech roles after sampling:")
+    print("=========================================")
+    for role, count in role_counts_after.items():
+        target_met = "✓" if sample_per_role is None or count == sample_per_role else "✗"
+        print(f"{role}: {count} ({count/len(final_df)*100:.1f}%) {target_met}")
 
-    skills_df = pd.concat(skills_data, ignore_index=True)
-    print(f"Found skills data for {len(skills_df)} tech jobs")
-
-    # Clean skills
-    skills_df['clean_skills'] = skills_df[skills_col].apply(clean_skills)
-
-    # Merge jobs and skills
-    merged_df = pd.merge(
-        tech_jobs_df,
-        skills_df,
-        left_on='job_id',
-        right_on=job_id_col,
-        how='inner'
-    )
-
-    # Print debug info if merge resulted in few rows
-    if len(merged_df) < min(len(tech_jobs_df), len(skills_df)) * 0.5:
-        print(f"Warning: Merge resulted in only {len(merged_df)} rows out of {len(tech_jobs_df)} tech jobs")
-        print(f"Sample job_id values from tech_jobs_df: {tech_jobs_df['job_id'].head().tolist()}")
-        print(f"Sample {job_id_col} values from skills_df: {skills_df[job_id_col].head().tolist()}")
-
-    # Select and rename final columns
-    try:
-        result_df = merged_df[['job_id', 'job_title', 'tech_role', 'clean_skills']].copy()
-        result_df.rename(columns={
-            'job_title': 'title',
-            'tech_role': 'role_category',
-            'clean_skills': 'skills'
-        }, inplace=True)
-    except KeyError as e:
-        print(f"Error selecting columns: {e}")
-        print(f"Available columns in merged_df: {merged_df.columns.tolist()}")
-
-        # Create a new DataFrame with the essential columns
-        result_df = pd.DataFrame({
-            'job_id': merged_df['job_id'],
-            'title': merged_df['job_title'],
-            'role_category': merged_df['tech_role'],
-            'skills': merged_df['clean_skills']
-        })
+    # Rename columns for output
+    result_df = pd.DataFrame({
+        'job_id': final_df[job_id_col],
+        'title': final_df[job_title_col],
+        'role_category': final_df['tech_role'],
+        'skills': final_df['skills']
+    })
 
     # Save the result
     result_df.to_csv(output_file, index=False)
-    print(f"Saved {len(result_df)} specific tech jobs with skills to {output_file}")
+    print(f"Saved processed data to {output_file}")
 
-    # Show top skills for each role category
+    # Calculate top skills for each role
     print("\nTop skills by role category:")
     for role in sorted(result_df['role_category'].unique()):
         role_skills = []
         for skills_list in result_df[result_df['role_category'] == role]['skills']:
-            try:
-                # Skills might be stored as string representation of list
-                if isinstance(skills_list, str):
-                    if skills_list.startswith('[') and skills_list.endswith(']'):
-                        # Try to evaluate as a list
-                        import ast
-                        try:
-                            skills = ast.literal_eval(skills_list)
-                            role_skills.extend(skills)
-                        except:
-                            # If parsing fails, just split by comma
-                            skills = [s.strip().strip("'\"") for s in skills_list.strip("[]").split(',')]
-                            role_skills.extend(skills)
-                    else:
-                        # Just split by comma
-                        skills = [s.strip() for s in skills_list.split(',')]
-                        role_skills.extend(skills)
-                elif isinstance(skills_list, list):
-                    role_skills.extend(skills_list)
-            except:
-                continue
+            if isinstance(skills_list, list):
+                role_skills.extend(skills_list)
 
         # Count skill occurrences
-        from collections import Counter
         skill_counts = Counter(role_skills)
 
-        # Print top 5 skills for this role
+        # Print top skills for this role
         if skill_counts:
-            top_skills = skill_counts.most_common(5)
-            print(f"  {role}:")
+            top_skills = skill_counts.most_common(10)
+            print(f"\n{role}:")
             for skill, count in top_skills:
-                print(f"    - {skill}: {count} occurrences")
+                print(f"  - {skill}: {count} occurrences")
 
-    # Return a sample of the data
-    return result_df.head(10)
+    # Validate the cleaning process
+    print("\nValidating final dataset...")
+    potential_generic, short_skills, punctuation_skills = validate_skills_cleaning(result_df)
 
+    # Report validation results
+    if not potential_generic and not short_skills and not punctuation_skills:
+        print("Validation passed: No significant issues found in skills data.")
+    else:
+        print("Validation identified some potential issues. Review the output above.")
+
+    # Report processing time
+    elapsed_time = time.time() - start_time
+    print(f"\nTotal processing time: {elapsed_time:.2f} seconds")
+
+    return result_df
 
 def main():
-    """Main function to process job data"""
-    # Check for Kaggle dataset path
-    path = "/root/.cache/kagglehub/datasets/asaniczka/1-3m-linkedin-jobs-and-skills-2024/versions/2"
-
-    # Alternative paths to check
-    alternative_paths = [
-        "./data",
-        "./dataset",
-        "."
-    ]
-
+    """Main function to download and process job data"""
+    print("Downloading LinkedIn jobs and skills dataset...")
     try:
-        alternative_paths.append(os.path.dirname(os.path.abspath(__file__)))
-    except NameError:
-        pass
+        # Download dataset using kagglehub
+        data_path = kagglehub.dataset_download("asaniczka/1-3m-linkedin-jobs-and-skills-2024")
+        print(f"Dataset downloaded to: {data_path}")
 
-    # Find the existing path
-    if not os.path.exists(path):
-        print(f"Dataset path not found: {path}")
-        for alt_path in alternative_paths:
-            if os.path.exists(alt_path):
-                path = alt_path
-                print(f"Using alternative path: {path}")
-                break
+        # Specify the exact files we need
+        job_postings_file = os.path.join(data_path, "linkedin_job_postings.csv")
+        skills_file = os.path.join(data_path, "job_skills.csv")
 
-    # Look for data files using smarter file detection
-    job_postings_file = find_csv_file(path, ["job", "posting"])
-    if not job_postings_file:
-        job_postings_file = find_csv_file(path, ["linkedin"])
-
-    skills_file = find_csv_file(path, ["job", "skill"])
-    if not skills_file:
-        skills_file = find_csv_file(path, ["skill"])
-
-    # Check if files exist
-    if not job_postings_file:
-        print("Error: Could not find job postings CSV file!")
-        print("Please specify the path to the job postings file:")
-        job_postings_file = input().strip()
+        # Verify the files exist
         if not os.path.exists(job_postings_file):
-            print(f"File not found: {job_postings_file}")
-            return
+            print(f"Error: Job postings file not found at {job_postings_file}")
+            files = os.listdir(data_path)
+            print(f"Available files in directory: {files}")
+            raise FileNotFoundError(f"Missing file: linkedin_job_postings.csv")
 
-    if not skills_file:
-        print("Error: Could not find job skills CSV file!")
-        print("Please specify the path to the job skills file:")
-        skills_file = input().strip()
         if not os.path.exists(skills_file):
-            print(f"File not found: {skills_file}")
-            return
+            print(f"Error: Skills file not found at {skills_file}")
+            files = os.listdir(data_path)
+            print(f"Available files in directory: {files}")
+            raise FileNotFoundError(f"Missing file: job_skills.csv")
 
-    # Output file path
-    output_file = os.path.join(path, "tech_jobs_with_skills.csv")
+        print(f"Job postings file: {job_postings_file}")
+        print(f"Job skills file: {skills_file}")
 
-    # Enable debug mode for troubleshooting
-    debug_mode = True  # Set to True for verbose output
+        # Output file path
+        output_file = os.path.join(data_path, "tech_jobs_with_skills.csv")
 
-    # Process the data
-    sample_data = merge_and_clean_tech_jobs(
-        jobs_file=job_postings_file,
-        skills_file=skills_file,
-        output_file=output_file,
-        debug=debug_mode
-    )
+        # Process the data with 100 samples per role
+        processed_data = process_data(
+            jobs_file=job_postings_file,
+            skills_file=skills_file,
+            output_file=output_file,
+            sample_per_role=100
+        )
 
-    # Display sample data
-    if sample_data is not None:
-        print("\nSample of processed data:")
-        print(sample_data)
+        # Display sample of processed data
+        if processed_data is not None:
+            print("\nSample of processed data:")
+            print(processed_data.head())
 
+            print(f"\nFull dataset saved to: {output_file}")
+            print(f"Total processed records: {len(processed_data)}")
+
+    except Exception as e:
+        print(f"Error in data processing: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()
