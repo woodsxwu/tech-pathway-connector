@@ -1,0 +1,1066 @@
+import streamlit as st
+import pandas as pd
+import networkx as nx
+import matplotlib.pyplot as plt
+import numpy as np
+from collections import defaultdict
+import json
+import os
+from matplotlib.patches import Patch
+
+# Set page config
+st.set_page_config(
+    page_title="Tech Career Transition Navigator",
+    page_icon="🧭",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Add custom CSS for styling
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2rem !important;
+        font-weight: 700 !important;
+        margin-bottom: 1rem !important;
+    }
+    .subheader {
+        font-size: 1.5rem !important;
+        font-weight: 600 !important;
+        margin-bottom: 1rem !important;
+    }
+    .card {
+        padding: 1.5rem;
+        border-radius: 0.5rem;
+        background-color: #f8f9fa;
+        margin-bottom: 1rem;
+    }
+    .skill-badge {
+        display: inline-block;
+        padding: 0.25rem 0.5rem;
+        margin-right: 0.5rem;
+        margin-bottom: 0.5rem;
+        border-radius: 0.25rem;
+        font-size: 0.875rem;
+        font-weight: 500;
+    }
+    .skill-badge-acquired {
+        background-color: #d1e7dd;
+        color: #146c43;
+        border: 1px solid #a3cfbb;
+    }
+    .skill-badge-needed {
+        background-color: #fff3cd;
+        color: #997404;
+        border: 1px solid #ffe69c;
+    }
+    .skill-badge-bridge {
+        background-color: #cfe2ff;
+        color: #084298;
+        border: 1px solid #9ec5fe;
+    }
+    .skill-badge-difficult {
+        background-color: #f8d7da;
+        color: #b02a37;
+        border: 1px solid #f5c2c7;
+    }
+    .progress-step {
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border: 1px solid #dee2e6;
+        margin-bottom: 1rem;
+    }
+    .progress-step-header {
+        display: flex;
+        align-items: center;
+        margin-bottom: 0.5rem;
+    }
+    .step-number {
+        width: 2rem;
+        height: 2rem;
+        border-radius: 50%;
+        background-color: #0d6efd;
+        color: white;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-right: 0.75rem;
+        font-weight: 600;
+    }
+    .difficulty-low {
+        background-color: #d1e7dd;
+        color: #146c43;
+    }
+    .difficulty-medium {
+        background-color: #fff3cd;
+        color: #997404;
+    }
+    .difficulty-high {
+        background-color: #f8d7da;
+        color: #b02a37;
+    }
+    .skill-selector {
+        background-color: #f8f9fa;
+        padding: 15px;
+        border-radius: 5px;
+        margin-bottom: 15px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+# Helper functions
+def format_role_name(role):
+    """Format role name for display"""
+    if not role:
+        return ""
+    return ' '.join(word.capitalize() for word in role.split('_'))
+
+
+def get_skill_difficulty(skill, bridge_skills=None):
+    """
+    Get the difficulty level of a skill based on:
+    1. Whether it's a bridging skill
+    2. Default difficulty mapping
+
+    Returns 'High', 'Medium', or 'Low'
+    """
+    # Default difficulties for common skills
+    default_difficulties = {
+        'kubernetes': 'High',
+        'terraform': 'High',
+        'machine learning': 'High',
+        'deep learning': 'High',
+        'pytorch': 'High',
+        'react': 'Medium',
+        'node.js': 'Medium',
+        'docker': 'Medium',
+        'aws': 'Medium',
+        'spring': 'Medium',
+        'django': 'Medium',
+        'html': 'Low',
+        'css': 'Low',
+        'git': 'Low',
+    }
+
+    # If it's a top bridging skill, it might be more difficult
+    if bridge_skills:
+        # Find if this is a bridging skill and get its score
+        for bridge in bridge_skills:
+            if bridge["skill"] == skill:
+                # Higher score typically means more important and potentially more complex
+                if bridge.get("score", 0) > 0.8:
+                    return 'High'
+                elif bridge.get("score", 0) > 0.5:
+                    return 'Medium'
+
+    # Return default difficulty or Medium if not found
+    return default_difficulties.get(skill, 'Medium')
+
+
+def get_difficulty_badge_class(difficulty):
+    """Get the CSS class for a difficulty badge"""
+    if difficulty == 'High':
+        return "difficulty-high"
+    elif difficulty == 'Medium':
+        return "difficulty-medium"
+    else:
+        return "difficulty-low"
+
+
+def get_estimated_time(skill, bridge_skills=None):
+    """Estimate time to learn a skill based on difficulty"""
+    difficulty = get_skill_difficulty(skill, bridge_skills)
+    time_map = {
+        'High': '3-6 months',
+        'Medium': '1-3 months',
+        'Low': '2-4 weeks'
+    }
+    return time_map[difficulty]
+
+
+@st.cache_data
+def load_mst_results(file_path="data/mst_results.json"):
+    """
+    Load MST results from the JSON file generated by MST_approach.py
+    """
+    try:
+        with open(file_path, "r") as f:
+            data = json.load(f)
+
+        # Create a NetworkX graph from the MST edges
+        mst = nx.Graph()
+        for edge in data["mst_edges"]:
+            mst.add_edge(edge["source"], edge["target"], weight=edge.get("weight", 1.0))
+
+        # Return the data with the NetworkX graph
+        return {
+            "mst": mst,
+            "top_bridging_skills": data["top_bridging_skills"],
+            "role_to_skills": data["role_to_skills"],
+            "skill_to_roles": data["skill_to_roles"]
+        }
+    except Exception as e:
+        st.error(f"Error loading MST results: {e}")
+        return None
+
+
+def draw_skill_graph(G, figsize=(12, 10), node_colors=None, node_sizes=None, title="Skill Relationship Graph"):
+    """Draw a graph visualization using matplotlib"""
+    # Create a new figure and axis
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Set up the layout (force-directed)
+    pos = nx.spring_layout(G, seed=42)
+
+    # Default node attributes if none provided
+    if node_colors is None:
+        node_colors = ['#1E88E5'] * G.number_of_nodes()
+
+    if node_sizes is None:
+        node_sizes = [300] * G.number_of_nodes()
+
+    # Draw the graph
+    nx.draw_networkx_nodes(G, pos, node_size=node_sizes, node_color=node_colors, alpha=0.8, ax=ax)
+    nx.draw_networkx_edges(G, pos, width=1, alpha=0.5, ax=ax)
+    nx.draw_networkx_labels(G, pos, font_size=8, font_color='black', ax=ax)
+
+    # Remove axis
+    ax.set_axis_off()
+
+    # Set title
+    plt.title(title, fontsize=16)
+
+    return fig
+
+
+def draw_transition_graph(mst, source_role, target_role, user_skills, data, figsize=(12, 10)):
+    """Draw the career transition graph showing path between roles"""
+    # Get skills for source and target roles
+    source_skills = set(data["role_to_skills"].get(source_role, []))
+    target_skills = set(data["role_to_skills"].get(target_role, []))
+
+    # Identify bridging skills (skills in both roles)
+    bridge_skills = source_skills.intersection(target_skills)
+
+    # Create a subgraph with relevant skills
+    relevant_skills = source_skills.union(target_skills)
+    subgraph_nodes = [node for node in mst.nodes() if node in relevant_skills]
+    subgraph = mst.subgraph(subgraph_nodes)
+
+    # Create a new figure and axis
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Improved layout with more spacing between nodes
+    pos = nx.spring_layout(subgraph, seed=42, k=0.8)  # Increase k for more spacing
+
+    # Define color map for nodes
+    def get_node_color(node):
+        if node in bridge_skills:
+            return '#4CAF50'  # Green for bridge skills
+        elif node in source_skills and node not in target_skills:
+            return '#2196F3'  # Blue for source only
+        elif node not in source_skills and node in target_skills:
+            return '#FF9800'  # Orange for target only
+        else:
+            return '#9E9E9E'  # Gray for other nodes
+
+    # Define size map for nodes
+    def get_node_size(node):
+        in_bridge = node in bridge_skills
+        is_bridging = node in [b["skill"] for b in data["top_bridging_skills"]]
+        already_acquired = node in user_skills
+
+        # Base size
+        size = 300
+
+        # Increase size for important nodes
+        if in_bridge:
+            size += 150
+        if is_bridging:
+            size += 100
+        if already_acquired:
+            size += 50
+
+        return size
+
+    # Get node colors and sizes
+    node_colors = [get_node_color(node) for node in subgraph.nodes()]
+    node_sizes = [get_node_size(node) for node in subgraph.nodes()]
+
+    # Draw the graph with improved clarity
+    nx.draw_networkx_nodes(subgraph, pos, node_size=node_sizes, node_color=node_colors, alpha=0.9, ax=ax)
+    nx.draw_networkx_edges(subgraph, pos, width=1.5, alpha=0.7, edge_color='#666666', ax=ax)
+
+    # Improved label positioning and appearance
+    labels = {node: node for node in subgraph.nodes()}
+    nx.draw_networkx_labels(subgraph, pos, labels=labels, font_size=10, font_color='black',
+                            font_weight='bold', bbox=dict(facecolor='white', edgecolor='none', alpha=0.7, pad=3), ax=ax)
+
+    # Add a legend
+    legend_elements = [
+        Patch(facecolor='#4CAF50', label='Bridge Skills (in both roles)'),
+        Patch(facecolor='#2196F3', label='Current Role Skills'),
+        Patch(facecolor='#FF9800', label='Target Role Skills')
+    ]
+    ax.legend(handles=legend_elements, loc='upper right')
+
+    # Remove axis
+    ax.set_axis_off()
+
+    # Set title
+    plt.title(f"Transition Path: {format_role_name(source_role)} → {format_role_name(target_role)}", fontsize=16)
+    plt.tight_layout()  # Improve spacing
+
+    return fig
+
+
+def find_transition_path(mst, source_role, target_role, role_to_skills):
+    """
+    Find paths between roles using the loaded MST
+    This simulates the functionality from MST_approach.py's find_transition_path function
+    """
+    # Get skills for source and target roles
+    source_skills = set(role_to_skills.get(source_role, []))
+    target_skills = set(role_to_skills.get(target_role, []))
+
+    # Find skills in the MST
+    source_in_mst = [s for s in source_skills if s in mst]
+    target_in_mst = [t for t in target_skills if t in mst]
+
+    if not source_in_mst or not target_in_mst:
+        return None
+
+    # Find paths (limited to save computation)
+    all_paths = []
+
+    # Limit the number of source/target skills to check
+    source_sample = source_in_mst[:min(5, len(source_in_mst))]
+    target_sample = target_in_mst[:min(5, len(target_in_mst))]
+
+    for source in source_sample:
+        for target in target_sample:
+            try:
+                path = nx.shortest_path(mst, source=source, target=target, weight='weight')
+
+                # Calculate path weight
+                path_weight = sum(mst[path[i]][path[i + 1]].get('weight', 1.0) for i in range(len(path) - 1))
+
+                # Identify which skills are new (not in source role)
+                new_skills = [skill for skill in path if skill not in source_skills]
+
+                all_paths.append({
+                    'path': path,
+                    'weight': path_weight,
+                    'new_skills': new_skills,
+                    'new_skill_count': len(new_skills),
+                    'source_skill': source,
+                    'target_skill': target
+                })
+            except nx.NetworkXNoPath:
+                continue
+
+    # Sort by number of new skills (fewer is better) and then by path weight
+    all_paths.sort(key=lambda x: (x['new_skill_count'], x['weight']))
+
+    return all_paths[:3] if all_paths else None
+
+
+def generate_pathway_steps(source_role, target_role, user_skills, data):
+    """Generate step-by-step career transition pathway"""
+    # Get skills for source and target roles
+    source_skills = set(data["role_to_skills"].get(source_role, []))
+    target_skills = set(data["role_to_skills"].get(target_role, []))
+
+    # Get skills to acquire and bridging skills
+    skills_to_acquire = [skill for skill in target_skills if skill not in user_skills]
+    bridging_skills = [skill for skill in target_skills if skill in user_skills]
+
+    # Get optimal transition paths
+    paths = find_transition_path(data["mst"], source_role, target_role, data["role_to_skills"])
+
+    # Skill dependencies based on the path
+    skill_dependencies = {}
+    if paths:
+        path = paths[0]['path']
+        for i in range(len(path) - 1):
+            current_skill = path[i]
+            next_skill = path[i + 1]
+            if next_skill not in skill_dependencies:
+                skill_dependencies[next_skill] = []
+            skill_dependencies[next_skill].append(current_skill)
+
+    # Sort skills by dependencies and difficulty
+    ordered_skills = skills_to_acquire.copy()
+
+    # Move skills with dependencies to the end if their dependencies are also in the list
+    i = 0
+    while i < len(ordered_skills):
+        skill = ordered_skills[i]
+        dependencies = skill_dependencies.get(skill, [])
+
+        # Check if any dependency is in the list and not yet acquired
+        has_pending_dependency = any(
+            dep in skills_to_acquire and dep not in user_skills
+            for dep in dependencies
+        )
+
+        if has_pending_dependency:
+            # Move this skill to the end
+            ordered_skills.pop(i)
+            ordered_skills.append(skill)
+        else:
+            i += 1
+
+    # Group skills by difficulty
+    skills_by_difficulty = defaultdict(list)
+    for skill in ordered_skills:
+        difficulty = get_skill_difficulty(skill, data["top_bridging_skills"])
+        skills_by_difficulty[difficulty].append(skill)
+
+    # Create pathway steps
+    steps = []
+
+    # Step 1: Leverage existing skills
+    steps.append({
+        "title": "Leverage Your Existing Skills",
+        "description": "Focus on the skills you already have that are valuable in your target role",
+        "skills": bridging_skills,
+        "action": "Highlight these skills in your resume and emphasize them in interviews",
+        "time_estimate": "Immediate advantage"
+    })
+
+    # Step 2: Quick wins (low difficulty)
+    if skills_by_difficulty['Low']:
+        steps.append({
+            "title": "Learn Quick-Win Skills",
+            "description": "These foundational skills are relatively easy to learn",
+            "skills": skills_by_difficulty['Low'],
+            "action": "Complete online tutorials or short courses",
+            "time_estimate": "2-4 weeks"
+        })
+
+    # Step 3: Core skills (medium difficulty)
+    if skills_by_difficulty['Medium']:
+        steps.append({
+            "title": "Build Core Technical Competencies",
+            "description": "These skills form the backbone of your new role",
+            "skills": skills_by_difficulty['Medium'],
+            "action": "Take comprehensive courses and build small projects",
+            "time_estimate": "1-3 months"
+        })
+
+    # Step 4: Advanced skills (high difficulty)
+    if skills_by_difficulty['High']:
+        steps.append({
+            "title": "Master Advanced Technologies",
+            "description": "These complex skills will distinguish you in your new role",
+            "skills": skills_by_difficulty['High'],
+            "action": "Deep-dive with advanced courses and substantial projects",
+            "time_estimate": "3-6 months"
+        })
+
+    # Step 5: Practical application
+    steps.append({
+        "title": "Apply Skills to Real Projects",
+        "description": "Solidify your learning with practical applications",
+        "skills": [],
+        "action": "Create portfolio projects that showcase your new skills in the context of your target role",
+        "time_estimate": "Ongoing"
+    })
+
+    # Step 6: Job transition
+    steps.append({
+        "title": "Make the Career Transition",
+        "description": "You're now ready to make the move to your target role",
+        "skills": [],
+        "action": "Update your resume, LinkedIn profile, and start applying to positions",
+        "time_estimate": "1-3 months"
+    })
+
+    return steps, bridging_skills, skills_to_acquire
+
+
+def show_pathway_guide(source_role, target_role, user_skills, data):
+    """Display the career pathway guide"""
+    steps, bridging_skills, skills_to_acquire = generate_pathway_steps(source_role, target_role, user_skills, data)
+
+    # Calculate progress
+    if skills_to_acquire:
+        progress = len(bridging_skills) / (len(bridging_skills) + len(skills_to_acquire)) * 100
+    else:
+        progress = 100
+
+    # Display progress
+    st.subheader("Transition Progress")
+    progress_text = f"{round(progress)}% Complete"
+    st.progress(progress / 100)
+
+    progress_status = None
+    if progress < 25:
+        progress_status = "Just starting your journey"
+    elif progress < 50:
+        progress_status = "Making good progress"
+    elif progress < 75:
+        progress_status = "Well on your way"
+    elif progress < 100:
+        progress_status = "Almost there!"
+    else:
+        progress_status = "Ready to transition!"
+
+    st.text(progress_status)
+    st.markdown("---")
+
+    # Display pathway steps
+    st.subheader("Your Transition Pathway")
+
+    for i, step in enumerate(steps):
+        with st.container():
+            st.markdown(f"""
+            <div class="progress-step">
+                <div class="progress-step-header">
+                    <div class="step-number">{i + 1}</div>
+                    <h3>{step["title"]}</h3>
+                </div>
+                <p>{step["description"]}</p>
+            """, unsafe_allow_html=True)
+
+            if step["skills"]:
+                st.markdown("<h4>Skills in this step:</h4>", unsafe_allow_html=True)
+                skill_html = ""
+                for skill in step["skills"]:
+                    difficulty = get_skill_difficulty(skill, data["top_bridging_skills"])
+                    is_acquired = skill in user_skills
+
+                    if is_acquired:
+                        badge_class = "skill-badge-acquired"
+                    elif difficulty == "High":
+                        badge_class = "skill-badge-difficult"
+                    elif skill in bridging_skills:
+                        badge_class = "skill-badge-bridge"
+                    else:
+                        badge_class = "skill-badge-needed"
+
+                    skill_html += f'<span class="skill-badge {badge_class}">{skill}'
+                    if is_acquired:
+                        skill_html += ' ✓'
+                    skill_html += '</span>'
+
+                st.markdown(f"<div>{skill_html}</div>", unsafe_allow_html=True)
+
+            st.markdown(f"""
+                <div style="display: flex; justify-content: space-between; margin-top: 0.5rem; font-size: 0.9rem;">
+                    <div>⏱️ {step["time_estimate"]}</div>
+                    <div>🎯 {step["action"]}</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+
+def draw_optimal_path_visualization(paths, source_role, target_role, user_skills, data):
+    """Draw a cleaner visualization of the optimal skill path"""
+    if not paths:
+        st.error("No path found between roles.")
+        return
+
+    path = paths[0]['path']  # Get the best path
+
+    # Create a directed graph for the path
+    G = nx.DiGraph()
+
+    # Add nodes and edges
+    for i in range(len(path) - 1):
+        G.add_edge(path[i], path[i + 1])
+
+    # Set up figure with more space
+    fig, ax = plt.subplots(figsize=(14, 7))
+
+    # Create a more structured layout
+    # Use hierarchical layout instead of spring layout
+    pos = {}
+    levels = {}
+
+    # Assign levels to nodes
+    for i, node in enumerate(path):
+        levels[node] = i
+
+    # Position nodes in a clear left-to-right path
+    max_level = max(levels.values())
+    for node, level in levels.items():
+        # Normalize x position from 0 to 1
+        x = level / max(1, max_level)
+        # Add some vertical variation but keep it minimal
+        y = 0.5 + (hash(node) % 100) / 300
+        pos[node] = (x, y)
+
+    # Node colors based on role and acquisition
+    node_colors = []
+    node_sizes = []
+
+    source_skills = set(data["role_to_skills"].get(source_role, []))
+    target_skills = set(data["role_to_skills"].get(target_role, []))
+    bridge_skills = source_skills.intersection(target_skills)
+
+    for node in G.nodes():
+        # Determine color
+        if node in bridge_skills:
+            color = '#4CAF50'  # Green for bridge skills
+        elif node in source_skills:
+            color = '#2196F3'  # Blue for source skills
+        elif node in target_skills:
+            color = '#FF9800'  # Orange for target skills
+        else:
+            color = '#9E9E9E'  # Gray for other
+
+        # Make acquired skills more transparent
+        if node in user_skills:
+            node_sizes.append(400)  # Larger for acquired skills
+        else:
+            node_sizes.append(300)
+
+        node_colors.append(color)
+
+    # Draw nodes
+    nx.draw_networkx_nodes(G, pos, node_color=node_colors, node_size=node_sizes, alpha=0.9, ax=ax)
+
+    # Draw edges with arrows
+    nx.draw_networkx_edges(G, pos, width=2.0, alpha=0.7, edge_color='#666666',
+                           arrowsize=20, arrowstyle='->', ax=ax)
+
+    # Add labels with white background for readability
+    labels = {node: node for node in G.nodes()}
+    nx.draw_networkx_labels(G, pos, labels=labels, font_size=11, font_weight='bold',
+                            font_color='black', bbox=dict(facecolor='white', edgecolor='none',
+                                                          alpha=0.8, pad=5), ax=ax)
+
+    # Add a legend
+    legend_elements = [
+        Patch(facecolor='#4CAF50', label='Bridge Skills (in both roles)'),
+        Patch(facecolor='#2196F3', label='Current Role Skills'),
+        Patch(facecolor='#FF9800', label='Target Role Skills')
+    ]
+    ax.legend(handles=legend_elements, loc='upper center', bbox_to_anchor=(0.5, 1.1), ncol=3)
+
+    # Set title and layout
+    plt.title(f"Optimal Skill Path: {format_role_name(source_role)} → {format_role_name(target_role)}", fontsize=16)
+    ax.set_axis_off()
+    plt.tight_layout()
+
+    return fig
+
+
+def show_skill_comparison(data):
+    """Show a comparison of different tech roles and their required skills"""
+    st.subheader("Tech Role Skill Comparison")
+
+    # Get all roles from the data
+    roles = list(data["role_to_skills"].keys())
+
+    # Display role selection
+    selected_roles = st.multiselect(
+        "Select roles to compare",
+        options=roles,
+        default=roles[:3] if len(roles) >= 3 else roles,
+        format_func=format_role_name
+    )
+
+    if not selected_roles:
+        st.info("Please select at least one role to view skills.")
+        return
+
+    # Create a DataFrame for the comparison
+    comparison_data = {}
+    all_skills = set()
+
+    for role in selected_roles:
+        skills = data["role_to_skills"].get(role, [])
+        comparison_data[role] = skills
+        all_skills.update(skills)
+
+    # Create a matrix of roles and skills
+    matrix = []
+    for skill in sorted(all_skills):
+        row = {"Skill": skill}
+        for role in selected_roles:
+            row[format_role_name(role)] = "✓" if skill in comparison_data[role] else ""
+        matrix.append(row)
+
+    # Create a DataFrame
+    df = pd.DataFrame(matrix)
+
+    # Display the table
+    st.dataframe(df.set_index("Skill"), use_container_width=True)
+
+    # Show statistics
+    st.subheader("Role Skill Statistics")
+    stats_cols = st.columns(len(selected_roles))
+
+    for i, role in enumerate(selected_roles):
+        with stats_cols[i]:
+            skills = comparison_data[role]
+            st.markdown(f"**{format_role_name(role)}**")
+            st.markdown(f"Total skills: {len(skills)}")
+
+            # Top bridging skills in this role
+            bridging_skills = [b["skill"] for b in data["top_bridging_skills"] if b["skill"] in skills]
+            st.markdown(f"Bridging skills: {len(bridging_skills)}")
+
+            if bridging_skills:
+                st.markdown("**Top bridging skills:**")
+                for skill in bridging_skills[:3]:
+                    st.markdown(f"- {skill}")
+
+
+def user_skill_selector(source_role, all_role_skills, current_user_skills):
+    """Let the user select their skills"""
+    st.subheader("Select Your Current Skills")
+
+    # Get all skills from the source role and sort them
+    role_skills = sorted(all_role_skills.get(source_role, []))
+
+    if not role_skills:
+        st.warning(f"No skills found for {format_role_name(source_role)}.")
+        return current_user_skills
+
+    # Show search bar for skills
+    search_term = st.text_input("Search for skills", "")
+
+    # Filter skills based on search
+    if search_term:
+        filtered_skills = [skill for skill in role_skills if search_term.lower() in skill.lower()]
+    else:
+        filtered_skills = role_skills
+
+    # Add additional common skills not in the role
+    common_extra_skills = ["git", "github", "agile", "jira", "communication"]
+    extra_skills = [skill for skill in common_extra_skills if skill not in filtered_skills]
+
+    # Combine role skills with extra skills
+    all_skills = filtered_skills + extra_skills if not search_term else filtered_skills
+
+    # Define number of columns for skill selection
+    num_cols = 3
+    cols = st.columns(num_cols)
+
+    # Create a dictionary to track skill selection state
+    if "skill_selection" not in st.session_state:
+        st.session_state.skill_selection = {skill: skill in current_user_skills for skill in all_skills}
+
+    # Update current skills based on selection
+    updated_skills = []
+
+    # Create checkboxes for each skill
+    for i, skill in enumerate(all_skills):
+        col_idx = i % num_cols
+        with cols[col_idx]:
+            skill_selected = st.checkbox(
+                skill,
+                value=st.session_state.skill_selection.get(skill, False),
+                key=f"skill_{skill}"
+            )
+
+            # Update the session state
+            st.session_state.skill_selection[skill] = skill_selected
+
+            if skill_selected:
+                updated_skills.append(skill)
+
+    # Button to select/deselect all skills
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Select All"):
+            for skill in all_skills:
+                st.session_state.skill_selection[skill] = True
+            st.rerun()
+
+    with col2:
+        if st.button("Deselect All"):
+            for skill in all_skills:
+                st.session_state.skill_selection[skill] = False
+            st.rerun()
+
+    return updated_skills
+
+
+def main():
+    # App header
+    st.markdown('<h1 class="main-header">Tech Career Transition Navigator</h1>', unsafe_allow_html=True)
+    st.markdown(
+        "Find your optimal path between tech roles using skill-based transition analysis. "
+        "This tool uses a Minimum Spanning Tree (MST) algorithm to identify the most efficient pathways between roles."
+    )
+
+    # Load the MST results from the JSON file
+    with st.spinner("Loading MST results..."):
+        # Try to load the MST results
+        mst_results_file = "data/mst_results.json"
+        if not os.path.exists(mst_results_file):
+            st.error(f"MST results file not found at {mst_results_file}. Please run the MST analysis first.")
+            return
+
+        data = load_mst_results(mst_results_file)
+        if data is None:
+            st.error("Failed to load MST results. Please check the file format.")
+            return
+
+    # Sidebar for role selection
+    with st.sidebar:
+        st.header("Role Selection")
+
+        available_roles = list(data["role_to_skills"].keys())
+        source_role = st.selectbox(
+            "Current Role",
+            options=available_roles,
+            format_func=format_role_name,
+            index=0
+        )
+
+        target_role = st.selectbox(
+            "Target Role",
+            options=available_roles,
+            format_func=format_role_name,
+            index=len(available_roles) - 1 if len(available_roles) > 1 else 0
+        )
+
+        # MST Information
+        st.header("MST Information")
+        st.markdown(f"**Nodes:** {data['mst'].number_of_nodes()}")
+        st.markdown(f"**Edges:** {data['mst'].number_of_edges()}")
+        st.markdown(f"**Top bridging skills:** {len(data['top_bridging_skills'])}")
+
+        # Show the top bridging skills
+        st.markdown("**Top 5 bridging skills:**")
+        for i, bridge in enumerate(data["top_bridging_skills"][:5]):
+            st.markdown(f"{i + 1}. {bridge['skill']}")
+
+    # Main content area with tabs
+    tab1, tab2, tab3 = st.tabs([
+        "Skill Selection",
+        "Transition Pathway",
+        "Skill Network"
+    ])
+
+    # Initialize user skills
+    if "user_skills" not in st.session_state:
+        # Default to no skills selected to force the user to choose their own
+        st.session_state.user_skills = []
+
+    # Tab 1: Skill Selection
+    with tab1:
+        st.header("Select Your Skills")
+        st.markdown("Choose the skills you currently possess to see an optimal transition path.")
+
+        # Let the user select their current skills
+        updated_skills = user_skill_selector(source_role, data["role_to_skills"], st.session_state.user_skills)
+
+        # Update session state with selected skills
+        st.session_state.user_skills = updated_skills
+
+        # Show selected skills count
+        st.markdown(f"**You've selected {len(updated_skills)} skills.**")
+
+        # Display selected skills as badges
+        if updated_skills:
+            st.subheader("Your Current Skills")
+
+            skill_html = ""
+            for skill in sorted(updated_skills):
+                skill_html += f'<span class="skill-badge skill-badge-acquired">{skill} ✓</span>'
+
+            st.markdown(f"<div>{skill_html}</div>", unsafe_allow_html=True)
+        else:
+            st.warning("Please select your current skills to help determine your optimal transition path.")
+
+    # Tab 2: Transition Pathway
+    with tab2:
+        if not st.session_state.user_skills:
+            st.warning("Please go to the Skill Selection tab and select your current skills first.")
+        else:
+            # Display the career pathway guide
+            show_pathway_guide(source_role, target_role, st.session_state.user_skills, data)
+
+            # Get transition paths for visualization
+            paths = find_transition_path(data["mst"], source_role, target_role, data["role_to_skills"])
+
+            if paths:
+                st.subheader("Optimal Transition Path")
+                st.markdown(f"The optimal path requires learning {len(paths[0]['new_skills'])} new skills.")
+
+                # Display optimal path info
+                path_details = f"Path starts from **{paths[0]['source_skill']}** (which you already know) and leads to **{paths[0]['target_skill']}** (required for your target role)."
+                st.markdown(path_details)
+
+                # Show which skills in the path the user already has vs. needs to learn
+                already_have = [skill for skill in paths[0]['path'] if skill in st.session_state.user_skills]
+                need_to_learn = [skill for skill in paths[0]['path'] if skill not in st.session_state.user_skills]
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("**Skills you already have:**")
+                    for skill in already_have:
+                        st.markdown(f"- {skill} ✓")
+
+                with col2:
+                    st.markdown("**Skills you need to learn:**")
+                    for skill in need_to_learn:
+                        difficulty = get_skill_difficulty(skill, data["top_bridging_skills"])
+                        st.markdown(
+                            f"- {skill} ({difficulty}, ~{get_estimated_time(skill, data['top_bridging_skills'])})")
+
+                # Draw the optimal path
+                fig = draw_optimal_path_visualization(paths, source_role, target_role, st.session_state.user_skills,
+                                                      data)
+                st.pyplot(fig)
+            else:
+                st.error("Could not find a transition path between the selected roles.")
+
+    # Tab 3: Skill Network
+    with tab3:
+        st.header("Skill Network Visualization")
+
+        # Option to toggle between different visualizations
+        view_option = st.radio(
+            "Select visualization type:",
+            options=["Role-specific Network", "Complete Skill Network"],
+            horizontal=True
+        )
+
+        if view_option == "Role-specific Network":
+            # Only show if user has selected skills
+            if not st.session_state.user_skills:
+                st.warning("Please go to the Skill Selection tab and select your current skills first.")
+            else:
+                # Draw transition-specific visualization with improved layout
+                with st.spinner("Generating transition graph..."):
+                    fig = draw_transition_graph(
+                        data["mst"],
+                        source_role,
+                        target_role,
+                        st.session_state.user_skills,
+                        data
+                    )
+                    st.pyplot(fig)
+
+                # Show explanation
+                st.markdown("""
+                **Network Visualization Explanation:**
+                - **Green nodes**: Skills that exist in both roles (bridging skills)
+                - **Blue nodes**: Skills in your current role
+                - **Orange nodes**: Skills in your target role
+                - Larger nodes represent skills you already possess
+                """)
+
+                # Display skill statistics
+                col1, col2, col3 = st.columns(3)
+
+                source_skills = set(data["role_to_skills"].get(source_role, []))
+                target_skills = set(data["role_to_skills"].get(target_role, []))
+                bridge_skills = source_skills.intersection(target_skills)
+
+                with col1:
+                    st.metric("Current Role Skills", len(source_skills))
+
+                with col2:
+                    st.metric("Target Role Skills", len(target_skills))
+
+                with col3:
+                    st.metric("Bridging Skills", len(bridge_skills))
+        else:
+            # Draw subset of full MST for better visualization
+            with st.spinner("Generating skill network..."):
+                # Take top skills based on bridging importance
+                top_bridge_skills = [b["skill"] for b in data["top_bridging_skills"][:50]]
+
+                # Add some skills from selected roles
+                source_skills = list(data["role_to_skills"].get(source_role, []))[:20]
+                target_skills = list(data["role_to_skills"].get(target_role, []))[:20]
+
+                # Combine skills
+                highlight_skills = set(top_bridge_skills + source_skills + target_skills)
+
+                # Create subgraph with these skills and their immediate neighbors
+                subgraph_nodes = set(highlight_skills)
+                for skill in highlight_skills:
+                    if skill in data["mst"]:
+                        subgraph_nodes.update(data["mst"].neighbors(skill))
+
+                # Limit to manageable size
+                subgraph_nodes = list(subgraph_nodes)[:100]
+                subgraph = data["mst"].subgraph(subgraph_nodes)
+
+                # Color nodes based on role and bridging status
+                node_colors = []
+                node_sizes = []
+
+                for node in subgraph.nodes():
+                    # Determine color
+                    if node in top_bridge_skills:
+                        color = '#E91E63'  # Pink for top bridging skills
+                    elif node in source_skills and node in target_skills:
+                        color = '#4CAF50'  # Green for skills in both roles
+                    elif node in source_skills:
+                        color = '#2196F3'  # Blue for source role skills
+                    elif node in target_skills:
+                        color = '#FF9800'  # Orange for target role skills
+                    else:
+                        color = '#9E9E9E'  # Gray for other skills
+
+                    # Determine size
+                    if node in top_bridge_skills:
+                        size = 400  # Larger for top bridging skills
+                    elif node in source_skills or node in target_skills:
+                        size = 300
+                    else:
+                        size = 200
+
+                    node_colors.append(color)
+                    node_sizes.append(size)
+
+                # Create and display figure
+                fig = plt.figure(figsize=(12, 10))
+                pos = nx.spring_layout(subgraph, seed=42, k=0.3)  # More spacing
+
+                nx.draw_networkx_nodes(subgraph, pos, node_color=node_colors, node_size=node_sizes, alpha=0.8)
+                nx.draw_networkx_edges(subgraph, pos, width=1, alpha=0.4, edge_color='#666666')
+
+                # Improved label visibility by only labeling important nodes
+                labels = {}
+                for node in subgraph.nodes():
+                    if node in top_bridge_skills or node in source_skills or node in target_skills:
+                        labels[node] = node
+
+                nx.draw_networkx_labels(
+                    subgraph, pos, labels=labels, font_size=9, font_weight='bold',
+                    font_color='black', bbox=dict(facecolor='white', edgecolor='none', alpha=0.7, pad=3)
+                )
+
+                plt.title("Tech Skill Network", fontsize=16)
+                plt.axis('off')
+                plt.tight_layout()
+
+                # Add a legend
+                legend_elements = [
+                    Patch(facecolor='#E91E63', label='Top Bridging Skills'),
+                    Patch(facecolor='#4CAF50', label='Skills in Both Roles'),
+                    Patch(facecolor='#2196F3', label='Current Role Skills'),
+                    Patch(facecolor='#FF9800', label='Target Role Skills'),
+                    Patch(facecolor='#9E9E9E', label='Related Skills')
+                ]
+                plt.legend(handles=legend_elements, loc='upper center', bbox_to_anchor=(0.5, 0), ncol=3)
+
+                st.pyplot(fig)
+
+                # Show explanation
+                st.markdown("""
+                **This visualization shows the relationships between skills in the tech ecosystem.**
+
+                The graph is built using a Minimum Spanning Tree (MST) algorithm, which identifies the most efficient connections between skills based on their co-occurrence in job postings.
+
+                The larger and more colorful nodes represent skills that are particularly important for transitioning between roles.
+                """)
+
+
+if __name__ == "__main__":
+    main()
