@@ -231,7 +231,7 @@ def find_transition_path(mst, role_to_skills, source_role, target_role, max_path
     return all_paths[:max_paths] if all_paths else None
 
 
-def save_results(mst, top_bridges, role_to_skills, skill_to_roles, skill_occurrences, filename="mst_results.json"):
+def save_results(mst, top_bridges, role_to_skills, skill_to_roles, skill_occurrences, filename="../data/mst_results.json"):
     """Save analysis results to a file"""
     # Convert sets to lists for JSON serialization
     role_to_skills_json = {role: list(skills) for role, skills in role_to_skills.items()}
