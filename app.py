@@ -315,7 +315,7 @@ def draw_transition_graph(mst, source_role, target_role, user_skills, data, figs
     return fig
 
 
-def find_transition_path(mst, source_role, target_role, role_to_skills):
+def find_transition_path(mst, source_role, target_role, role_to_skills, user_skills=None):
     """
     Find paths between roles using the loaded MST
     This simulates the functionality from MST_approach.py's find_transition_path function
@@ -346,8 +346,11 @@ def find_transition_path(mst, source_role, target_role, role_to_skills):
                 # Calculate path weight
                 path_weight = sum(mst[path[i]][path[i + 1]].get('weight', 1.0) for i in range(len(path) - 1))
 
-                # Identify which skills are new (not in source role)
-                new_skills = [skill for skill in path if skill not in source_skills]
+                # Important: Identify which skills are new (not possessed by the user)
+                if user_skills:
+                    new_skills = [skill for skill in path if skill not in user_skills]
+                else:
+                    new_skills = [skill for skill in path if skill not in source_skills]
 
                 all_paths.append({
                     'path': path,
@@ -367,56 +370,83 @@ def find_transition_path(mst, source_role, target_role, role_to_skills):
 
 
 def generate_pathway_steps(source_role, target_role, user_skills, data):
-    """Generate step-by-step career transition pathway"""
+    """
+    Generate step-by-step career transition pathway based on MST edge weights
+    to maximize employability at each stage
+    """
     # Get skills for source and target roles
     source_skills = set(data["role_to_skills"].get(source_role, []))
     target_skills = set(data["role_to_skills"].get(target_role, []))
 
-    # Get skills to acquire and bridging skills
+    # Get skills the user already has for the target role
+    user_has_for_target = [skill for skill in target_skills if skill in user_skills]
+
+    # Skills to acquire (in target role but not possessed by user)
     skills_to_acquire = [skill for skill in target_skills if skill not in user_skills]
-    bridging_skills = [skill for skill in target_skills if skill in user_skills]
+
+    # Always ensure there's at least one skill to acquire, even if all target skills are in user_skills
+    if not skills_to_acquire:
+        # Find skills common in the target role that user doesn't have yet
+        all_target_role_skills = data["role_to_skills"].get(target_role, [])
+        potential_skills = [s for s in all_target_role_skills if s not in user_skills]
+        if potential_skills:
+            skills_to_acquire = potential_skills[:5]
 
     # Get optimal transition paths
-    paths = find_transition_path(data["mst"], source_role, target_role, data["role_to_skills"])
+    paths = find_transition_path(data["mst"], source_role, target_role, data["role_to_skills"], user_skills)
 
-    # Skill dependencies based on the path
-    skill_dependencies = {}
-    if paths:
-        path = paths[0]['path']
-        for i in range(len(path) - 1):
-            current_skill = path[i]
-            next_skill = path[i + 1]
-            if next_skill not in skill_dependencies:
-                skill_dependencies[next_skill] = []
-            skill_dependencies[next_skill].append(current_skill)
+    # Calculate average edge weight for each skill to determine importance
+    skill_importance = {}
+    mst = data["mst"]
 
-    # Sort skills by dependencies and difficulty
-    ordered_skills = skills_to_acquire.copy()
+    for skill in skills_to_acquire:
+        # Skip if skill is not in MST
+        if skill not in mst:
+            continue
 
-    # Move skills with dependencies to the end if their dependencies are also in the list
-    i = 0
-    while i < len(ordered_skills):
-        skill = ordered_skills[i]
-        dependencies = skill_dependencies.get(skill, [])
+        # Get all edges connected to this skill
+        edges = mst.edges(skill, data=True)
 
-        # Check if any dependency is in the list and not yet acquired
-        has_pending_dependency = any(
-            dep in skills_to_acquire and dep not in user_skills
-            for dep in dependencies
-        )
+        # Calculate average weight (lower weight = stronger connection)
+        total_weight = sum(edge[2].get('weight', 1.0) for edge in edges)
+        avg_weight = total_weight / len(edges) if edges else float('inf')
 
-        if has_pending_dependency:
-            # Move this skill to the end
-            ordered_skills.pop(i)
-            ordered_skills.append(skill)
-        else:
-            i += 1
+        # Invert weight for importance (lower weight = higher importance)
+        skill_importance[skill] = 1.0 / avg_weight if avg_weight > 0 else 0
 
-    # Group skills by difficulty
-    skills_by_difficulty = defaultdict(list)
-    for skill in ordered_skills:
-        difficulty = get_skill_difficulty(skill, data["top_bridging_skills"])
-        skills_by_difficulty[difficulty].append(skill)
+    # Add centrality as an additional factor for importance
+    if paths and paths[0]['path']:
+        # Skills in the optimal path get a boost
+        for skill in paths[0]['path']:
+            if skill in skill_importance:
+                skill_importance[skill] *= 1.5
+
+    # Sort skills by their importance
+    sorted_skills = sorted(
+        [(skill, importance) for skill, importance in skill_importance.items()],
+        key=lambda x: x[1],
+        reverse=True  # Higher importance first
+    )
+
+    # Define skill tiers based on MST edge weights
+    high_importance = []
+    medium_importance = []
+    low_importance = []
+
+    if sorted_skills:
+        # Get max importance for normalization
+        max_importance = max(imp for _, imp in sorted_skills)
+
+        for skill, importance in sorted_skills:
+            # Normalize importance as percentage of max
+            relative_importance = (importance / max_importance) * 100 if max_importance > 0 else 0
+
+            if relative_importance >= 70:  # Top 70% and above
+                high_importance.append(skill)
+            elif relative_importance >= 30:  # 30-70%
+                medium_importance.append(skill)
+            else:  # Below 30%
+                low_importance.append(skill)
 
     # Create pathway steps
     steps = []
@@ -424,92 +454,102 @@ def generate_pathway_steps(source_role, target_role, user_skills, data):
     # Step 1: Leverage existing skills
     steps.append({
         "title": "Leverage Your Existing Skills",
-        "description": "Focus on the skills you already have that are valuable in your target role",
-        "skills": bridging_skills,
+        "description": "Use the skills you already have that are valuable in your target role",
+        "skills": user_has_for_target,
         "action": "Highlight these skills in your resume and emphasize them in interviews",
         "time_estimate": "Immediate advantage"
     })
 
-    # Step 2: Quick wins (low difficulty)
-    if skills_by_difficulty['Low']:
+    # Step 2: High-importance skills (strongly connected in MST)
+    if high_importance:
         steps.append({
-            "title": "Learn Quick-Win Skills",
-            "description": "These foundational skills are relatively easy to learn",
-            "skills": skills_by_difficulty['Low'],
-            "action": "Complete online tutorials or short courses",
-            "time_estimate": "2-4 weeks"
+            "title": "Master Key Bridging Skills",
+            "description": "These skills have the strongest connections in the skill network",
+            "skills": high_importance,
+            "action": "Focus on these skills first as they provide the most efficient path to your target role",
+            "time_estimate": "1-2 months"
         })
 
-    # Step 3: Core skills (medium difficulty)
-    if skills_by_difficulty['Medium']:
+    # Step 3: Medium-importance skills (moderately connected)
+    if medium_importance:
         steps.append({
-            "title": "Build Core Technical Competencies",
-            "description": "These skills form the backbone of your new role",
-            "skills": skills_by_difficulty['Medium'],
-            "action": "Take comprehensive courses and build small projects",
-            "time_estimate": "1-3 months"
+            "title": "Build Supporting Technical Skills",
+            "description": "These skills strengthen your technical foundation",
+            "skills": medium_importance,
+            "action": "Develop these skills to round out your technical profile",
+            "time_estimate": "2-3 months"
         })
 
-    # Step 4: Advanced skills (high difficulty)
-    if skills_by_difficulty['High']:
+    # Step 4: Low-importance skills (weakly connected)
+    if low_importance:
         steps.append({
-            "title": "Master Advanced Technologies",
-            "description": "These complex skills will distinguish you in your new role",
-            "skills": skills_by_difficulty['High'],
-            "action": "Deep-dive with advanced courses and substantial projects",
-            "time_estimate": "3-6 months"
+            "title": "Add Specialized Knowledge",
+            "description": "These skills add depth to your expertise",
+            "skills": low_importance[:10],  # Limit to avoid overwhelming
+            "action": "Add these skills to distinguish yourself in specific areas",
+            "time_estimate": "Ongoing"
         })
 
     # Step 5: Practical application
     steps.append({
-        "title": "Apply Skills to Real Projects",
-        "description": "Solidify your learning with practical applications",
+        "title": "Apply Skills in Projects",
+        "description": "Demonstrate your new skills through practical projects",
         "skills": [],
-        "action": "Create portfolio projects that showcase your new skills in the context of your target role",
+        "action": "Create portfolio projects that showcase your ability to apply your skills in realistic scenarios",
         "time_estimate": "Ongoing"
     })
 
     # Step 6: Job transition
     steps.append({
         "title": "Make the Career Transition",
-        "description": "You're now ready to make the move to your target role",
+        "description": "You're now ready to apply for positions in your target role",
         "skills": [],
-        "action": "Update your resume, LinkedIn profile, and start applying to positions",
+        "action": "Update your resume highlighting your new skill set and start applying to positions",
         "time_estimate": "1-3 months"
     })
 
-    return steps, bridging_skills, skills_to_acquire
+    return steps, user_has_for_target, skills_to_acquire
+
+
+def save_results(mst, top_bridges, role_to_skills, skill_to_roles, skill_occurrences, filename="mst_results.json"):
+    """Save analysis results to a file"""
+    # Convert sets to lists for JSON serialization
+    role_to_skills_json = {role: list(skills) for role, skills in role_to_skills.items()}
+    skill_to_roles_json = {skill: list(roles) for skill, roles in skill_to_roles.items()}
+
+    # Extract basic MST structure
+    mst_edges = list(mst.edges(data=True))
+    mst_json = [
+        {
+            "source": edge[0],
+            "target": edge[1],
+            "weight": edge[2].get("weight", 1.0)
+        }
+        for edge in mst_edges
+    ]
+
+    # Format top bridges
+    bridges_json = [{"skill": skill, "score": score, "occurrence": skill_occurrences.get(skill, 0),
+                     "roles": list(skill_to_roles.get(skill, []))}
+                    for skill, score in top_bridges]
+
+    # Save results
+    results = {
+        "mst_edges": mst_json,
+        "top_bridging_skills": bridges_json,
+        "role_to_skills": role_to_skills_json,
+        "skill_to_roles": skill_to_roles_json
+    }
+
+    with open(filename, "w") as f:
+        json.dump(results, f, indent=2)
+
+    print(f"Results saved to {filename}")
 
 
 def show_pathway_guide(source_role, target_role, user_skills, data):
     """Display the career pathway guide"""
     steps, bridging_skills, skills_to_acquire = generate_pathway_steps(source_role, target_role, user_skills, data)
-
-    # Calculate progress
-    if skills_to_acquire:
-        progress = len(bridging_skills) / (len(bridging_skills) + len(skills_to_acquire)) * 100
-    else:
-        progress = 100
-
-    # Display progress
-    st.subheader("Transition Progress")
-    progress_text = f"{round(progress)}% Complete"
-    st.progress(progress / 100)
-
-    progress_status = None
-    if progress < 25:
-        progress_status = "Just starting your journey"
-    elif progress < 50:
-        progress_status = "Making good progress"
-    elif progress < 75:
-        progress_status = "Well on your way"
-    elif progress < 100:
-        progress_status = "Almost there!"
-    else:
-        progress_status = "Ready to transition!"
-
-    st.text(progress_status)
-    st.markdown("---")
 
     # Display pathway steps
     st.subheader("Your Transition Pathway")
@@ -882,11 +922,30 @@ def main():
             show_pathway_guide(source_role, target_role, st.session_state.user_skills, data)
 
             # Get transition paths for visualization
-            paths = find_transition_path(data["mst"], source_role, target_role, data["role_to_skills"])
+            paths = find_transition_path(data["mst"], source_role, target_role, data["role_to_skills"],
+                                         st.session_state.user_skills)
 
             if paths:
                 st.subheader("Optimal Transition Path")
-                st.markdown(f"The optimal path requires learning {len(paths[0]['new_skills'])} new skills.")
+
+                # Ensure there's at least one new skill to display
+                if len(paths[0]['new_skills']) == 0:
+                    st.markdown(
+                        "While you already have many of the required skills, the optimal path suggests strengthening your expertise in the following areas:")
+                    # Recommend skills from the target role that aren't in the path but are popular
+                    target_skills = data["role_to_skills"].get(target_role, [])
+                    recommended_skills = [s for s in target_skills if s not in paths[0]['path']][:3]
+
+                    # If there are still no skills to recommend, use bridging skills
+                    if not recommended_skills:
+                        top_bridges = [b["skill"] for b in data["top_bridging_skills"]]
+                        recommended_skills = [s for s in top_bridges if s not in st.session_state.user_skills][:3]
+
+                    # Display recommended skills
+                    for skill in recommended_skills:
+                        st.markdown(f"- {skill}")
+                else:
+                    st.markdown(f"The optimal path requires learning {len(paths[0]['new_skills'])} new skills.")
 
                 # Display optimal path info
                 path_details = f"Path starts from **{paths[0]['source_skill']}** (which you already know) and leads to **{paths[0]['target_skill']}** (required for your target role)."
@@ -945,12 +1004,12 @@ def main():
 
                 # Show explanation
                 st.markdown("""
-                **Network Visualization Explanation:**
-                - **Green nodes**: Skills that exist in both roles (bridging skills)
-                - **Blue nodes**: Skills in your current role
-                - **Orange nodes**: Skills in your target role
-                - Larger nodes represent skills you already possess
-                """)
+                    **Network Visualization Explanation:**
+                    - **Green nodes**: Skills that exist in both roles (bridging skills)
+                    - **Blue nodes**: Skills in your current role
+                    - **Orange nodes**: Skills in your target role
+                    - Larger nodes represent skills you already possess
+                    """)
 
                 # Display skill statistics
                 col1, col2, col3 = st.columns(3)
@@ -1054,12 +1113,12 @@ def main():
 
                 # Show explanation
                 st.markdown("""
-                **This visualization shows the relationships between skills in the tech ecosystem.**
+                    **This visualization shows the relationships between skills in the tech ecosystem.**
 
-                The graph is built using a Minimum Spanning Tree (MST) algorithm, which identifies the most efficient connections between skills based on their co-occurrence in job postings.
+                    The graph is built using a Minimum Spanning Tree (MST) algorithm, which identifies the most efficient connections between skills based on their co-occurrence in job postings.
 
-                The larger and more colorful nodes represent skills that are particularly important for transitioning between roles.
-                """)
+                    The larger and more colorful nodes represent skills that are particularly important for transitioning between roles.
+                    """)
 
 
 if __name__ == "__main__":
