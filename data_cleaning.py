@@ -4,6 +4,9 @@ import os
 import kagglehub
 from collections import Counter
 import time
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
 
 def identify_tech_roles(job_title):
     """
@@ -552,6 +555,9 @@ def process_data(jobs_file, skills_file, output_file, sample_per_role=100):
     print("Performing final skills cleaning...")
     tech_jobs_slim = post_process_skills(tech_jobs_slim, skills_column='skills')
 
+    print("\nGenerating visualizations and statistics for tech roles...")
+    analyze_tech_roles(tech_jobs_slim, tech_role_column='tech_role', skills_column='skills')
+
     # Sample equal number from each role category
     if sample_per_role is not None:
         print("Sampling equal roles...")
@@ -664,6 +670,218 @@ def main():
         print(f"Error in data processing: {str(e)}")
         import traceback
         traceback.print_exc()
+
+def analyze_tech_roles(tech_jobs_df, tech_role_column='tech_role', skills_column='skills'):
+    """
+    Analyze the distribution of tech roles and their top skills
+    
+    Parameters:
+    -----------
+    tech_jobs_df : pandas.DataFrame
+        DataFrame containing tech jobs data with role and skills columns
+    tech_role_column : str
+        Column name containing the tech role categories
+    skills_column : str
+        Column name containing the list of skills for each job
+    """
+    # Set up the plotting style
+    plt.style.use('ggplot')
+    sns.set(font_scale=1.2)
+    
+    # 1. Overall Tech Role Distribution
+    print("Analyzing tech role distribution...")
+    role_counts = tech_jobs_df[tech_role_column].value_counts()
+    role_percentages = role_counts / len(tech_jobs_df) * 100
+    
+    # Create a DataFrame for the distribution
+    role_dist_df = pd.DataFrame({
+        'Role': role_counts.index,
+        'Count': role_counts.values,
+        'Percentage': role_percentages.values
+    })
+    
+    print("\nTech Role Distribution:")
+    print("======================")
+    for _, row in role_dist_df.iterrows():
+        print(f"{row['Role']}: {row['Count']} jobs ({row['Percentage']:.1f}%)")
+    
+    # Plot the distribution as a bar chart
+    plt.figure(figsize=(12, 8))
+    ax = sns.barplot(
+        x='Count', 
+        y='Role', 
+        data=role_dist_df.sort_values('Count', ascending=False),
+        palette='viridis'
+    )
+    plt.title('Distribution of Tech Roles', fontsize=16)
+    plt.xlabel('Number of Jobs', fontsize=14)
+    plt.ylabel('Tech Role', fontsize=14)
+    
+    # Add count and percentage annotations
+    for i, v in enumerate(role_dist_df.sort_values('Count', ascending=False)['Count']):
+        ax.text(
+            v + 5, 
+            i, 
+            f"{v} ({role_dist_df.sort_values('Count', ascending=False)['Percentage'].iloc[i]:.1f}%)", 
+            va='center'
+        )
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # 2. Top skills by role - Create histogram for each role
+    print("\nAnalyzing top skills for each tech role...")
+    
+    # Create a combined DataFrame to store all top skills data
+    all_top_skills = []
+    
+    # Process each role
+    for role in sorted(tech_jobs_df[tech_role_column].unique()):
+        role_skills = []
+        role_df = tech_jobs_df[tech_jobs_df[tech_role_column] == role]
+        
+        # Collect all skills for this role
+        for skills_list in role_df[skills_column]:
+            if isinstance(skills_list, list):
+                role_skills.extend(skills_list)
+            elif isinstance(skills_list, str):
+                # If skills are stored as a string, convert to list (adjust as needed)
+                try:
+                    # Try to parse if it's stored as a string representation of a list
+                    import ast
+                    parsed_skills = ast.literal_eval(skills_list)
+                    if isinstance(parsed_skills, list):
+                        role_skills.extend(parsed_skills)
+                except:
+                    # If parsing fails, split by comma (adjust based on your data format)
+                    role_skills.extend([s.strip() for s in skills_list.split(',')])
+        
+        # Count skill occurrences
+        skill_counts = Counter(role_skills)
+        
+        # Get top skills
+        top_n = 10
+        if skill_counts:
+            top_skills = skill_counts.most_common(top_n)
+            
+            # Print top skills for this role
+            print(f"\n{role}:")
+            for skill, count in top_skills:
+                print(f"  - {skill}: {count} occurrences")
+            
+            # Store in combined DataFrame
+            for skill, count in top_skills:
+                all_top_skills.append({
+                    'role': role,
+                    'skill': skill,
+                    'count': count,
+                    'percentage': count / len(role_skills) * 100
+                })
+            
+            # Create horizontal bar chart for this role
+            plt.figure(figsize=(10, 6))
+            
+            # Extract skills and counts
+            skills = [item[0] for item in top_skills]
+            counts = [item[1] for item in top_skills]
+            
+            # Create horizontal bar chart
+            bars = plt.barh(skills[::-1], counts[::-1], color=plt.cm.viridis(np.linspace(0.1, 0.9, len(skills))))
+            plt.title(f'Top {top_n} Skills for {role}', fontsize=16)
+            plt.xlabel('Number of Occurrences', fontsize=14)
+            
+            # Add count annotations
+            for i, bar in enumerate(bars):
+                plt.text(
+                    bar.get_width() + 0.5, 
+                    bar.get_y() + bar.get_height()/2, 
+                    f"{counts[::-1][i]} ({counts[::-1][i]/sum(counts)*100:.1f}%)",
+                    va='center'
+                )
+            
+            plt.tight_layout()
+            plt.show()
+    
+    # Create a DataFrame with all top skills
+    top_skills_df = pd.DataFrame(all_top_skills)
+    
+    # Save the data for further analysis
+    top_skills_df.to_csv('top_skills_by_role.csv', index=False)
+    print("\nSaved top skills data to 'top_skills_by_role.csv'")
+    
+    # 3. Create a heatmap of top skills across roles
+    print("\nCreating skills heatmap across roles...")
+    
+    # Get the most common skills across all roles
+    all_role_skills = []
+    for skills_list in tech_jobs_df[skills_column]:
+        if isinstance(skills_list, list):
+            all_role_skills.extend(skills_list)
+        elif isinstance(skills_list, str):
+            try:
+                parsed_skills = ast.literal_eval(skills_list)
+                if isinstance(parsed_skills, list):
+                    all_role_skills.extend(parsed_skills)
+            except:
+                all_role_skills.extend([s.strip() for s in skills_list.split(',')])
+    
+    # Get the top 15 skills overall
+    top_overall_skills = [skill for skill, _ in Counter(all_role_skills).most_common(15)]
+    
+    # Create a matrix for the heatmap
+    roles = sorted(tech_jobs_df[tech_role_column].unique())
+    heatmap_data = []
+    
+    for role in roles:
+        role_skills = []
+        role_df = tech_jobs_df[tech_jobs_df[tech_role_column] == role]
+        
+        # Collect all skills for this role
+        for skills_list in role_df[skills_column]:
+            if isinstance(skills_list, list):
+                role_skills.extend(skills_list)
+            elif isinstance(skills_list, str):
+                try:
+                    parsed_skills = ast.literal_eval(skills_list)
+                    if isinstance(parsed_skills, list):
+                        role_skills.extend(parsed_skills)
+                except:
+                    role_skills.extend([s.strip() for s in skills_list.split(',')])
+        
+        skill_counts = Counter(role_skills)
+        
+        # Calculate percentages of jobs with each top skill
+        role_row = []
+        for skill in top_overall_skills:
+            if skill in skill_counts:
+                # Percentage of jobs in this role that have this skill
+                percentage = skill_counts[skill] / len(role_df) * 100
+                role_row.append(percentage)
+            else:
+                role_row.append(0)
+        
+        heatmap_data.append(role_row)
+    
+    # Create the heatmap
+    plt.figure(figsize=(14, 10))
+    sns.heatmap(
+        heatmap_data, 
+        annot=True, 
+        fmt=".1f", 
+        xticklabels=top_overall_skills, 
+        yticklabels=roles,
+        cmap="YlGnBu"
+    )
+    plt.title('Top Skills Distribution Across Tech Roles (% of jobs)', fontsize=16)
+    plt.xlabel('Skills', fontsize=14)
+    plt.ylabel('Tech Roles', fontsize=14)
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    plt.show()
+    
+    print("\nAnalysis complete!")
+    
+    return role_dist_df, top_skills_df
 
 if __name__ == "__main__":
     main()
