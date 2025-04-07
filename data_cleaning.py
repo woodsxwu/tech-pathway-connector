@@ -4,7 +4,6 @@ import os
 import kagglehub
 from collections import Counter
 import time
-from tqdm import tqdm
 
 def identify_tech_roles(job_title):
     """
@@ -13,6 +12,20 @@ def identify_tech_roles(job_title):
     """
     # Convert to lowercase for case-insensitive matching
     title = str(job_title).lower()
+
+    non_tech_patterns = [
+        r'\b(mechanic|automotive|technician|repair|oil change)\b',
+        r'\b(nurse|medical|healthcare|patient|clinical)\b',
+        r'\b(sales associate|cashier|retail|store)\b',
+        r'\b(sales|account executive|business development|customer success|talent acquisition)\b',
+        r'\b(manufacturing|industrial|production|factory|assembly|fabrication)\b',
+        r'\b(food|manufacturing|production|industrial|factory)\b',
+        r'\b(gmp|haccp|fda|safety|selenium|food safety)\b',
+    ]
+    
+    for pattern in non_tech_patterns:
+        if re.search(pattern, title):
+            return None
 
     # Define tech role patterns with clear boundaries to prevent partial matches
     tech_patterns = {
@@ -27,7 +40,7 @@ def identify_tech_roles(job_title):
         'embedded_engineer': r'\b(embedded|firmware|hardware engineer|iot engineer)\b',
         'database_engineer': r'\b(database engineer|dba|database administrator|sql developer)\b',
         'data_analyst': r'\b(data analyst|business intelligence|bi developer|analytics)\b',
-        'technical_support': r'\b(technical support|it support|help desk|system admin)\b',
+        # 'technical_support': r'\b(technical support|it support|help desk|system admin)\b',
     }
 
     # Order matters - check specialized roles first
@@ -56,7 +69,13 @@ def is_generic_skill(skill):
         'leadership', 'time management', 'creativity', 'critical thinking',
         'adaptability', 'collaboration', 'attention to detail', 'project management',
         'organization', 'self-motivated', 'self motivated', 'analytical skills',
-        'analytical thinking', 'interpersonal skills', 'interpersonal',
+        'analytical thinking', 'interpersonal skills', 'interpersonal', 'problemsolving',
+        'troubleshooting',
+
+        # Employment conditions & requirements
+        'cleanbackground', 'backgroundcheck', 'drugtesting', 'drugtest',
+        'cleandriving', 'cleanrecord', 'availabletowork', 'workweekends',
+        'reliability', 'dependability', 'punctuality', 'flexibility',
 
         # Generic business terms
         'business', 'strategy', 'analytics', 'reporting', 'scheduling', 'training',
@@ -66,10 +85,20 @@ def is_generic_skill(skill):
         # Too generic tech terms
         'computer', 'technology', 'technical', 'it', 'software', 'hardware', 'programming',
         'coding', 'development', 'engineering', 'testing', 'debugging', 'computer science',
+        'software development', 'risk management', 'quality assurance',
 
         # Generic tools
         'microsoft office', 'office', 'word', 'excel', 'powerpoint', 'outlook', 'email',
-        'presentation', 'spreadsheet', 'microsoft', 'office suite'
+        'presentation', 'spreadsheet', 'microsoft', 'office suite',
+
+        # Employee benefits
+        'paid time off', 'pto', 'benefits', 'vacation', 'health insurance',
+        'retirement', '401k', 'bonus', 'compensation',
+
+        # existing items...
+        'bachelors degree', 'bachelor degree', 'bachelor', 'masters degree', 
+        'phd', 'doctorate', 'associates degree', 'certification',
+        'degree', 'diploma', 'education', 
     }
 
     # Check if skill contains common generic skill keywords
@@ -258,6 +287,36 @@ def normalize_skill(skill):
     # Return the canonical skill name if found, otherwise the original
     return skill_mappings.get(skill.lower(), skill)
 
+def is_non_tech_skill(skill):
+    """
+    Identify if a skill is clearly not related to technology
+    Returns True if the skill is non-tech, False otherwise
+    """
+    # Make sure we're comparing lowercase strings
+    skill_lower = skill.lower().strip()
+
+    # List of skills from non-tech domains
+    non_tech_skills = {
+        # Medical
+        'phlebotomy', 'medical', 'healthcare', 'clinical', 'patient care',
+        'vital signs', 'medical terminology', 'cpr', 'first aid', 'haccp', 'gmp',
+        'selenium', 'food safety',
+        
+        # Automotive
+        'automotive repair', 'ase certifications', 'basic automotive tools',
+        'vehicle maintenance', 'automotive diagnostic', 'brake repair',
+        
+        # Retail/Sales
+        'sales', 'retail', 'cashiering', 'merchandising', 'inventory management',
+        'point of sale', 'customer service', 'sales experience',
+        
+        # Transportation
+        'reliable transportation', 'valid drivers license', 'cdl',
+        'driving', 'transportation', 'delivery', 'logistics', 'drivers license', 'driver\'s license', 'driving license',
+    }
+    
+    return skill_lower in non_tech_skills
+
 def clean_skills(skills_text):
     """Clean and normalize a comma-separated skills string"""
     if not isinstance(skills_text, str) or not skills_text.strip():
@@ -290,7 +349,7 @@ def clean_skills(skills_text):
         normalized_skill = normalize_skill(skill)
 
         # Filter out generic skills
-        if not is_generic_skill(normalized_skill):
+        if not is_generic_skill(normalized_skill) and not is_non_tech_skill(normalized_skill):
             cleaned_skills.append(normalized_skill)
 
     # Remove duplicates while preserving order
