@@ -27,7 +27,7 @@ def calculate_job_similarity(job1_skills, job2_skills):
     return similarity
 
 def find_similar_jobs(target_job_id, df, top_n=5):
-    """查找与目标职位最相似的职位"""
+    """Find jobs most similar to the target job"""
     target_job = df[df['job_id'] == target_job_id].iloc[0]
     target_skills = target_job['skills']
     
@@ -41,15 +41,15 @@ def find_similar_jobs(target_job_id, df, top_n=5):
                 'similarity': similarity
             })
     
-    # 按相似度排序
+    # Sort by similarity
     similarities.sort(key=lambda x: x['similarity'], reverse=True)
     return similarities[:top_n]
 
 def calculate_all_pairs_similarity(df, top_n=20):
-    """计算所有职位对之间的相似度并排序"""
+    """Calculate and sort similarity for all job pairs"""
     job_pairs = []
     
-    # 获取所有职位ID的组合
+    # Get all job ID combinations
     job_ids = df['job_id'].tolist()
     for job1_id, job2_id in combinations(job_ids, 2):
         job1 = df[df['job_id'] == job1_id].iloc[0]
@@ -65,7 +65,7 @@ def calculate_all_pairs_similarity(df, top_n=20):
             'similarity': similarity
         })
     
-    # 按相似度排序
+    # Sort by similarity
     job_pairs.sort(key=lambda x: x['similarity'], reverse=True)
     return job_pairs[:top_n]
 
