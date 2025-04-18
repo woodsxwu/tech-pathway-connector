@@ -3,7 +3,7 @@ TechBridge Strategy implementation using phase-adaptive submodular optimization.
 """
 
 import networkx as nx
-from collections import defaultdict, Counter
+from collections import Counter
 import numpy as np
 from sklearn.cluster import SpectralClustering
 
